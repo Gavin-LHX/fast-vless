@@ -129,8 +129,7 @@ EOF
 while true; do
   clear
   green "AD：优秀流媒体便宜LXC小鸡：伤心的云 sadidc.cn"
-  green "AD：低价精品线路KVM & LXC：拼好鸽 gelxc.cloud"
-  green "AD: 大量优秀解锁 & 优化线路KVM: jia cloud jiavps.com"
+  green "AD: 大量优秀解锁 & 优化线路KVM: 光锥云 lightcone.hk"
   green "======= VLESS Reality 一键脚本V6.1正式版 by Lorry-San（💩山Pro Max） ======="
   echo "1) 安装并配置 VLESS Reality Vision节点"  
   echo "2）生成Trojan Reality节点"
