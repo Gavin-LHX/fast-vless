@@ -87,7 +87,7 @@ install_trojan_reality() {
     exit 1
   fi
   SHORT_ID=$(head -c 4 /dev/urandom | xxd -p)
-  SNI="icloud.cdn-apple.com"
+  SNI="www.microsoft.com"
 
   mkdir -p /usr/local/etc/xray
   cat > /usr/local/etc/xray/config.json <<EOF
@@ -161,7 +161,7 @@ while true; do
         exit 1
       fi
       SHORT_ID=$(head -c 4 /dev/urandom | xxd -p)
-      SNI="icloud.cdn-apple.com"
+      SNI="www.microsoft.com"
 
       mkdir -p /usr/local/etc/xray
       cat > /usr/local/etc/xray/config.json <<EOF
