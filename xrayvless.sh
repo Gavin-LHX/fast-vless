@@ -79,8 +79,13 @@ install_trojan_reality() {
 
   PASSWORD=$(openssl rand -hex 8)
   KEYS=$($XRAY_BIN x25519)
-  PRIV_KEY=$(echo "$KEYS" | awk '/PrivateKey:/ {print $2}')
-  PUB_KEY=$(echo "$KEYS" | awk '/Password/ {print $2}')
+  PRIV_KEY=$(echo "$KEYS" | awk '/Private(Key| key):/ {print $NF; exit}')
+  PUB_KEY=$(echo "$KEYS" | awk '/Public(Key| key):/ {print $NF; exit}')
+  if [ -z "$PRIV_KEY" ] || [ -z "$PUB_KEY" ]; then
+    red "Failed to parse x25519 keypair. Please check Xray output."
+    echo "$KEYS"
+    exit 1
+  fi
   SHORT_ID=$(head -c 4 /dev/urandom | xxd -p)
   SNI="icloud.cdn-apple.com"
 
@@ -150,8 +155,13 @@ while true; do
       read -rp "节点备注: " REMARK
       UUID=$(cat /proc/sys/kernel/random/uuid)
       KEYS=$($XRAY_BIN x25519)
-      PRIV_KEY=$(echo "$KEYS" | awk '/PrivateKey:/ {print $2}')
-      PUB_KEY=$(echo "$KEYS" | awk '/Password/ {print $2}')
+      PRIV_KEY=$(echo "$KEYS" | awk '/Private(Key| key):/ {print $NF; exit}')
+      PUB_KEY=$(echo "$KEYS" | awk '/Public(Key| key):/ {print $NF; exit}')
+      if [ -z "$PRIV_KEY" ] || [ -z "$PUB_KEY" ]; then
+        red "Failed to parse x25519 keypair. Please check Xray output."
+        echo "$KEYS"
+        exit 1
+      fi
       SHORT_ID=$(head -c 4 /dev/urandom | xxd -p)
       SNI="icloud.cdn-apple.com"
 
