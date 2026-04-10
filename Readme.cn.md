@@ -30,4 +30,4 @@
 使用 **root权限** 运行以下命令：
 
 ```bash
-bash <(curl -L https://raw.githubusercontent.com/Lorry-San/fast-vless/main/xrayvless.sh)
+bash <(curl -L https://raw.githubusercontent.com/Gavin-LHX/fast-vless/main/xrayvless.sh)
