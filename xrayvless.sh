@@ -79,8 +79,8 @@ install_trojan_reality() {
 
   PASSWORD=$(openssl rand -hex 8)
   KEYS=$($XRAY_BIN x25519)
-  PRIV_KEY=$(echo "$KEYS" | awk '/Private(Key| key):/ {print $NF; exit}')
-  PUB_KEY=$(echo "$KEYS" | awk '/Public(Key| key):/ {print $NF; exit}')
+  PRIV_KEY=$(printf '%s\n' "$KEYS" | awk -F': ' '/Private(Key| key)/ {print $2; exit}')
+  PUB_KEY=$(printf '%s\n' "$KEYS" | awk -F': ' '/PublicKey|Public key|Password \(PublicKey\)/ {print $2; exit}')
   if [ -z "$PRIV_KEY" ] || [ -z "$PUB_KEY" ]; then
     red "Failed to parse x25519 keypair. Please check Xray output."
     echo "$KEYS"
@@ -133,9 +133,7 @@ EOF
 #====== 主菜单 ======
 while true; do
   clear
-  green "AD：优秀流媒体便宜LXC小鸡：伤心的云 sadidc.cn"
-  green "AD: 大量优秀解锁 & 优化线路KVM: 光锥云 lightcone.hk"
-  green "======= VLESS Reality 一键脚本V6.1正式版 by Lorry-San（💩山Pro Max） ======="
+  green "======= VLESS Reality 一键脚本V6.2正式版 by L.H.X ======="
   echo "1) 安装并配置 VLESS Reality Vision节点"  
   echo "2）生成Trojan Reality节点"
   echo "3) 生成 VLESS 中转链接"
@@ -155,8 +153,8 @@ while true; do
       read -rp "节点备注: " REMARK
       UUID=$(cat /proc/sys/kernel/random/uuid)
       KEYS=$($XRAY_BIN x25519)
-      PRIV_KEY=$(echo "$KEYS" | awk '/Private(Key| key):/ {print $NF; exit}')
-      PUB_KEY=$(echo "$KEYS" | awk '/Public(Key| key):/ {print $NF; exit}')
+      PRIV_KEY=$(printf '%s\n' "$KEYS" | awk -F': ' '/Private(Key| key)/ {print $2; exit}')
+      PUB_KEY=$(printf '%s\n' "$KEYS" | awk -F': ' '/PublicKey|Public key|Password \(PublicKey\)/ {print $2; exit}')
       if [ -z "$PRIV_KEY" ] || [ -z "$PUB_KEY" ]; then
         red "Failed to parse x25519 keypair. Please check Xray output."
         echo "$KEYS"
