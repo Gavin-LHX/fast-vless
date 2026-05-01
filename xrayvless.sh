@@ -4,6 +4,7 @@ set -e
 green() { echo -e "\033[32m$1\033[0m"; }
 red()   { echo -e "\033[31m$1\033[0m"; }
 yellow() { echo -e "\033[33m$1\033[0m"; } 
+LINK_HISTORY_FILE="/root/xray_link_history.txt"
 #====== 安装依赖 ======
 detect_os() {
   if [ -f /etc/os-release ]; then
@@ -71,6 +72,29 @@ check_ip_clean() {
   read -rp "按任意键返回菜单..."
 }
 
+save_link_history() {
+  local protocol="$1"
+  local remark="$2"
+  local link="$3"
+
+  {
+    echo "===== $(date '+%Y-%m-%d %H:%M:%S') | $protocol | $remark ====="
+    echo "$link"
+    echo
+  } >> "$LINK_HISTORY_FILE"
+}
+
+show_link_history() {
+  clear
+  green "======= 历史节点链接 ======="
+  if [ -s "$LINK_HISTORY_FILE" ]; then
+    cat "$LINK_HISTORY_FILE"
+  else
+    yellow "暂无历史节点链接。安装 VLESS 或 Trojan 节点后会自动保存。"
+  fi
+  read -rp "按任意键返回菜单..."
+}
+
 install_trojan_reality() {
   check_and_install_xray
   XRAY_BIN=$(command -v xray || echo "/usr/local/bin/xray")
@@ -126,6 +150,7 @@ EOF
   fi
   IP=$(curl -s ipv4.ip.sb || curl -s ifconfig.me)
   LINK="trojan://$PASSWORD@$IP:$PORT?security=reality&sni=$SNI&pbk=$PUB_KEY&sid=$SHORT_ID&type=tcp&headerType=none#$REMARK"
+  save_link_history "Trojan Reality" "$REMARK" "$LINK"
   green "✅ Trojan Reality 节点链接如下："
   echo "$LINK"
   read -rp "按任意键返回菜单..."
@@ -141,6 +166,7 @@ while true; do
   echo "5) 检查 IP 纯净度 & 流媒体解锁"
   echo "6) Ookla Speedtest 测试"
   echo "7) 卸载 Xray"
+  echo "8) 查看历史节点链接"
   echo "0) 退出"
   echo
   read -rp "请选择操作: " choice
@@ -201,6 +227,7 @@ EOF
 	  fi
       IP=$(curl -s ipv4.ip.sb || curl -s ifconfig.me)
       LINK="vless://$UUID@$IP:$PORT?type=tcp&security=reality&flow=xtls-rprx-vision&sni=$SNI&fp=chrome&pbk=$PUB_KEY&sid=$SHORT_ID#$REMARK"
+      save_link_history "VLESS Reality Vision" "$REMARK" "$LINK"
       green "✅ 节点链接如下："
       echo "$LINK"
       read -rp "按任意键返回菜单..."
@@ -276,6 +303,10 @@ EOF
       rm -rf /usr/local/etc/xray /usr/local/bin/xray
       green "✅ Xray 已卸载"
       read -rp "按任意键返回菜单..."
+      ;;
+
+    8)
+      show_link_history
       ;;
 
     0)
