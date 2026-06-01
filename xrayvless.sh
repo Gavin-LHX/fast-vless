@@ -100,6 +100,8 @@ install_trojan_reality() {
   XRAY_BIN=$(command -v xray || echo "/usr/local/bin/xray")
   read -rp "监听端口（如 443）: " PORT
   read -rp "节点备注（如：trojanNode）: " REMARK
+  read -rp "Reality 域名/SNI（默认 www.microsoft.com）: " SNI
+  SNI=${SNI:-www.microsoft.com}
 
   PASSWORD=$(openssl rand -hex 8)
   KEYS=$($XRAY_BIN x25519)
@@ -111,7 +113,6 @@ install_trojan_reality() {
     exit 1
   fi
   SHORT_ID=$(head -c 4 /dev/urandom | xxd -p)
-  SNI="www.microsoft.com"
 
   mkdir -p /usr/local/etc/xray
   cat > /usr/local/etc/xray/config.json <<EOF
@@ -177,6 +178,8 @@ while true; do
       XRAY_BIN=$(command -v xray || echo "/usr/local/bin/xray")
       read -rp "监听端口（如 443）: " PORT
       read -rp "节点备注: " REMARK
+      read -rp "Reality 域名/SNI（默认 www.microsoft.com）: " SNI
+      SNI=${SNI:-www.microsoft.com}
       UUID=$(cat /proc/sys/kernel/random/uuid)
       KEYS=$($XRAY_BIN x25519)
       PRIV_KEY=$(printf '%s\n' "$KEYS" | awk -F': ' '/Private(Key| key)/ {print $2; exit}')
@@ -187,7 +190,6 @@ while true; do
         exit 1
       fi
       SHORT_ID=$(head -c 4 /dev/urandom | xxd -p)
-      SNI="www.microsoft.com"
 
       mkdir -p /usr/local/etc/xray
       cat > /usr/local/etc/xray/config.json <<EOF
