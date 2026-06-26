@@ -10,7 +10,9 @@ VLESS / Trojan Reality 一键安装脚本，适合在 VPS 或 LXC 环境中快�
 - 自动安装 Xray Core
 - 一键生成 `VLESS Reality Vision` 节点
 - 一键生成 `Trojan Reality` 节点
-- 支持自定义 Reality 域名 / SNI
+- 按服务器地区自动选择 Reality 伪装 CDN 域名
+- 使用 `xray tls ping` 探测证书链长度，避免超过 Reality 可用上限
+- 支持手动输入 Reality 域名 / SNI，并在使用前先探测可用性
 - 自动生成客户端导入链接
 - 自动保存历史节点链接，方便后续查询
 - 生成 VLESS 中转链接
@@ -57,21 +59,38 @@ bash <(curl -L https://raw.githubusercontent.com/Gavin-LHX/fast-vless/main/xrayv
 0) 退出
 ```
 
-## Reality 域名 / SNI
+## Reality 域名选择
 
-安装 VLESS 或 Trojan 节点时，脚本会提示输入 Reality 域名 / SNI：
-
-```text
-Reality 域名/SNI（默认 www.microsoft.com）:
-```
-
-直接回车会使用默认值 `www.microsoft.com`。如果你想使用其他域名，可以在这里输入，例如：
+安装 VLESS 或 Trojan 节点时，脚本会提示：
 
 ```text
-www.microsoft.com
+Reality 域名/SNI（回车自动按地区选择，手动输入则先探测）:
 ```
 
-脚本会把该域名同时写入 Xray 配置中的 `dest`、`serverNames`，以及最终生成链接中的 `sni` 参数。
+直接回车时，脚本会：
+
+1. 通过 `curl ipinfo.io` 检测服务器地区
+2. 按地区选择游戏 / 软件 / CDN 类候选域名
+3. 使用 Xray 自带的 `xray tls ping` 逐个探测
+4. 只使用 SNI 握手成功且证书链长度小于 `8192` 的域名
+5. 把选中的域名写入 Xray 配置和最终链接的 `sni` 参数
+
+手动输入域名时，脚本也会先执行 `xray tls ping`。如果探测失败或证书链长度不合格，会要求重新输入。
+
+## 候选域名策略
+
+候选域名优先选择大陆可访问倾向较强的大流量游戏、软件和 CDN 域名，例如米哈游 / HoYoverse、腾讯、网易相关 CDN。
+
+脚本不会把以下类型放入自动候选池：
+
+- 政治相关网站
+- NSFW 网站
+- 政府网站
+- 银行网站
+- 苹果网站
+- 已知证书链超过 Reality 上限的域名
+
+`www.microsoft.com` 不再作为默认域名，仅作为所有 CDN 候选都失败后的最后兜底，并且使用前同样必须通过 `xray tls ping` 探测。
 
 ## 历史链接
 
@@ -104,6 +123,7 @@ www.microsoft.com
 - 开启 BBR 功能会重写 `/etc/sysctl.conf`，如服务器已有自定义内核参数，请先自行备份
 - 卸载 Xray 会删除 `/usr/local/etc/xray` 和 `/usr/local/bin/xray`
 - 历史链接文件不会在卸载 Xray 时自动删除
+- 自动候选采用保守域名池，不等同于从大陆网络做实时 GFW 可达性检测
 
 ## 卸载
 

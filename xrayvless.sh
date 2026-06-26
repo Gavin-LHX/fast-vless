@@ -5,6 +5,8 @@ green() { echo -e "\033[32m$1\033[0m"; }
 red()   { echo -e "\033[31m$1\033[0m"; }
 yellow() { echo -e "\033[33m$1\033[0m"; } 
 LINK_HISTORY_FILE="/root/xray_link_history.txt"
+REALITY_CERT_MAX=8192
+REALITY_LAST_RESORT_DOMAIN="www.microsoft.com"
 #====== 安装依赖 ======
 detect_os() {
   if [ -f /etc/os-release ]; then
@@ -47,9 +49,9 @@ check_and_install_xray() {
   else
     green "❗检测到 Xray 未安装，正在安装..."
 	if [ "$OS" = "alpine" ]; then
-		bash <(curl -L https://github.com/Lorry-San/fast-vless/raw/refs/heads/main/xrayinstall-alpine.sh)
+		bash <(curl -L https://raw.githubusercontent.com/Gavin-LHX/fast-vless/main/xrayinstall-alpine.sh)
 	else
-		bash <(curl -L https://github.com/Lorry-San/fast-vless/raw/refs/heads/main/xrayinstall.sh)
+		bash <(curl -L https://raw.githubusercontent.com/Gavin-LHX/fast-vless/main/xrayinstall.sh)
 	fi
     
     XRAY_BIN=$(command -v xray || echo "/usr/local/bin/xray")
@@ -95,13 +97,172 @@ show_link_history() {
   read -rp "按任意键返回菜单..."
 }
 
+detect_server_country() {
+  local info country
+
+  info=$(curl -fsSL --max-time 8 https://ipinfo.io/json 2>/dev/null || true)
+  country=$(printf '%s\n' "$info" | jq -r '.country // empty' 2>/dev/null || true)
+  printf '%s\n' "$country" | tr '[:lower:]' '[:upper:]'
+}
+
+get_reality_candidates() {
+  local country="$1"
+
+  case "$country" in
+    CN|HK|MO|TW)
+      cat <<EOF
+autopatchcn.yuanshen.com
+autopatchhk.yuanshen.com
+autopatchcn.bhsr.com
+bundle.bh3.com
+game.gtimg.cn
+ossweb-img.qq.com
+nie.res.netease.com
+adl.netease.com
+EOF
+      ;;
+    JP|KR)
+      cat <<EOF
+autopatchos.starrails.com
+launcher-webstatic.hoyoverse.com
+download-porter.hoyoverse.com
+autopatchhk.yuanshen.com
+game.gtimg.cn
+EOF
+      ;;
+    SG|MY|TH|VN|PH|ID)
+      cat <<EOF
+autopatchhk.yuanshen.com
+launcher-webstatic.hoyoverse.com
+download-porter.hoyoverse.com
+game.gtimg.cn
+nie.res.netease.com
+EOF
+      ;;
+    US|CA|GB|IE|FR|DE|NL|BE|LU|CH|AT|ES|PT|IT|SE|NO|DK|FI|PL|CZ|HU|RO|BG|GR|AU|NZ)
+      cat <<EOF
+launcher-webstatic.hoyoverse.com
+download-porter.hoyoverse.com
+autopatchos.starrails.com
+game.gtimg.cn
+nie.res.netease.com
+EOF
+      ;;
+  esac
+}
+
+get_global_reality_candidates() {
+  cat <<EOF
+launcher-webstatic.hoyoverse.com
+download-porter.hoyoverse.com
+autopatchcn.yuanshen.com
+game.gtimg.cn
+nie.res.netease.com
+EOF
+}
+
+probe_reality_domain() {
+  local xray_bin="$1"
+  local domain="$2"
+  local output sni_ok max_len
+
+  yellow "探测 Reality 域名: $domain"
+  output=$("$xray_bin" tls ping "$domain" 2>&1 || true)
+  sni_ok=$(printf '%s\n' "$output" | awk 'BEGIN { in_sni=0 } /Pinging with SNI/ { in_sni=1 } in_sni && /Handshake succeeded/ { print "1"; exit }')
+  max_len=$(printf '%s\n' "$output" | awk '
+    BEGIN { in_sni=0; max=0 }
+    /Pinging with SNI/ { in_sni=1; next }
+    in_sni && /Certificate chain.*total length:/ {
+      for (i=1; i<=NF; i++) {
+        if ($i ~ /^[0-9]+$/) {
+          if ($i > max) max=$i
+          break
+        }
+      }
+    }
+    END { if (max > 0) print max }
+  ')
+
+  if [ "$sni_ok" = "1" ] && [ -n "$max_len" ] && [ "$max_len" -lt "$REALITY_CERT_MAX" ]; then
+    green "✅ $domain 可用，证书链长度: $max_len"
+    return 0
+  fi
+
+  if [ -n "$max_len" ]; then
+    yellow "跳过 $domain，证书链长度 $max_len 不满足 < $REALITY_CERT_MAX"
+  else
+    yellow "跳过 $domain，SNI 握手失败或无法读取证书链长度"
+  fi
+  return 1
+}
+
+select_reality_domain() {
+  local xray_bin="$1"
+  local country="$2"
+  local domain seen
+
+  seen=" "
+  while IFS= read -r domain; do
+    [ -z "$domain" ] && continue
+    case "$seen" in
+      *" $domain "*) continue ;;
+    esac
+    seen="$seen$domain "
+
+    if [ "$domain" = "$REALITY_LAST_RESORT_DOMAIN" ]; then
+      yellow "CDN 候选均不可用，开始测试微软最后兜底域名。"
+    fi
+
+    if probe_reality_domain "$xray_bin" "$domain"; then
+      SNI="$domain"
+      return 0
+    fi
+  done <<EOF
+$(get_reality_candidates "$country")
+$(get_global_reality_candidates)
+$REALITY_LAST_RESORT_DOMAIN
+EOF
+
+  return 1
+}
+
+choose_reality_domain() {
+  local xray_bin="$1"
+  local manual country
+
+  while true; do
+    read -rp "Reality 域名/SNI（回车自动按地区选择，手动输入则先探测）: " manual
+    if [ -n "$manual" ]; then
+      if probe_reality_domain "$xray_bin" "$manual"; then
+        SNI="$manual"
+        REALITY_COUNTRY="MANUAL"
+        green "已使用手动指定的 Reality 域名: $SNI"
+        return 0
+      fi
+      red "该域名未通过 Xray 探测，请重新输入，或直接回车自动选择。"
+      continue
+    fi
+
+    country=$(detect_server_country)
+    country=${country:-UNKNOWN}
+    REALITY_COUNTRY="$country"
+    green "检测到服务器地区: $country"
+
+    if select_reality_domain "$xray_bin" "$country"; then
+      green "Reality 已选择: $SNI (地区: $REALITY_COUNTRY)"
+      return 0
+    fi
+
+    red "自动候选域名均未通过探测，请手动输入可用域名，或按 Ctrl+C 退出。"
+  done
+}
+
 install_trojan_reality() {
   check_and_install_xray
   XRAY_BIN=$(command -v xray || echo "/usr/local/bin/xray")
   read -rp "监听端口（如 443）: " PORT
   read -rp "节点备注（如：trojanNode）: " REMARK
-  read -rp "Reality 域名/SNI（默认 www.microsoft.com）: " SNI
-  SNI=${SNI:-www.microsoft.com}
+  choose_reality_domain "$XRAY_BIN"
 
   PASSWORD=$(openssl rand -hex 8)
   KEYS=$($XRAY_BIN x25519)
@@ -178,8 +339,7 @@ while true; do
       XRAY_BIN=$(command -v xray || echo "/usr/local/bin/xray")
       read -rp "监听端口（如 443）: " PORT
       read -rp "节点备注: " REMARK
-      read -rp "Reality 域名/SNI（默认 www.microsoft.com）: " SNI
-      SNI=${SNI:-www.microsoft.com}
+      choose_reality_domain "$XRAY_BIN"
       UUID=$(cat /proc/sys/kernel/random/uuid)
       KEYS=$($XRAY_BIN x25519)
       PRIV_KEY=$(printf '%s\n' "$KEYS" | awk -F': ' '/Private(Key| key)/ {print $2; exit}')
