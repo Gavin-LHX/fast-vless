@@ -13,6 +13,7 @@ VLESS / Trojan Reality 一键安装脚本，适合在 VPS 或 LXC 环境中快�
 - 按服务器地区自动选择 Reality 伪装 CDN 域名
 - 使用 `xray tls ping` 探测证书链长度，避免超过 Reality 可用上限
 - 支持手动输入 Reality 域名 / SNI，并在使用前先探测可用性
+- 支持粘贴 `https://example.com/path`，脚本会自动提取真实域名
 - 自动生成客户端导入链接
 - 自动保存历史节点链接，方便后续查询
 - 生成 VLESS 中转链接
@@ -77,9 +78,23 @@ Reality 域名/SNI（回车自动按地区选择，手动输入则先探测）:
 
 手动输入域名时，脚本也会先执行 `xray tls ping`。如果探测失败或证书链长度不合格，会要求重新输入。
 
+手动输入支持方向键编辑；如果粘贴完整 URL，例如：
+
+```text
+https://www.alibabagroup.com/
+```
+
+脚本会自动识别为：
+
+```text
+www.alibabagroup.com
+```
+
 ## 候选域名策略
 
 候选域名优先选择大陆可访问倾向较强的大流量游戏、软件和 CDN 域名，例如米哈游 / HoYoverse、腾讯、网易相关 CDN。
+
+新加坡 / 东南亚地区会优先使用 HoYoverse SG、Hoyolab、Alibaba / Alicdn 等候选域名，再进入全局候选。
 
 脚本不会把以下类型放入自动候选池：
 

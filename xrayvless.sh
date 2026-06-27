@@ -7,6 +7,17 @@ yellow() { echo -e "\033[33m$1\033[0m"; }
 LINK_HISTORY_FILE="/root/xray_link_history.txt"
 REALITY_CERT_MAX=8192
 REALITY_LAST_RESORT_DOMAIN="www.microsoft.com"
+
+prompt_read() {
+  local prompt="$1"
+  local var_name="$2"
+
+  if [ -t 0 ]; then
+    read -e -r -p "$prompt" "$var_name"
+  else
+    read -r -p "$prompt" "$var_name"
+  fi
+}
 #====== 安装依赖 ======
 detect_os() {
   if [ -f /etc/os-release ]; then
@@ -97,6 +108,23 @@ show_link_history() {
   read -rp "按任意键返回菜单..."
 }
 
+normalize_reality_domain() {
+  local raw="$1"
+  local domain
+
+  domain=$(printf '%s' "$raw" | sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//')
+  domain=$(printf '%s' "$domain" | tr '[:upper:]' '[:lower:]')
+  domain=${domain#http://}
+  domain=${domain#https://}
+  domain=${domain%%/*}
+  domain=${domain%%\?*}
+  domain=${domain%%#*}
+  domain=${domain##*@}
+  domain=${domain%%:*}
+  domain=${domain%.}
+  printf '%s\n' "$domain"
+}
+
 detect_server_country() {
   local info country
 
@@ -132,11 +160,17 @@ EOF
       ;;
     SG|MY|TH|VN|PH|ID)
       cat <<EOF
-autopatchhk.yuanshen.com
+sg-public-api.hoyoverse.com
+sg-public-data-api.hoyoverse.com
+sg-hk4e-api.hoyoverse.com
+sg-public-api.hoyolab.com
 launcher-webstatic.hoyoverse.com
 download-porter.hoyoverse.com
-game.gtimg.cn
-nie.res.netease.com
+sdk-os-static.hoyoverse.com
+g.alicdn.com
+img.alicdn.com
+gw.alipayobjects.com
+www.alibabagroup.com
 EOF
       ;;
     US|CA|GB|IE|FR|DE|NL|BE|LU|CH|AT|ES|PT|IT|SE|NO|DK|FI|PL|CZ|HU|RO|BG|GR|AU|NZ)
@@ -165,6 +199,12 @@ probe_reality_domain() {
   local xray_bin="$1"
   local domain="$2"
   local output sni_ok max_len
+
+  domain=$(normalize_reality_domain "$domain")
+  if [ -z "$domain" ]; then
+    yellow "跳过空域名"
+    return 1
+  fi
 
   yellow "探测 Reality 域名: $domain"
   output=$("$xray_bin" tls ping "$domain" 2>&1 || true)
@@ -228,13 +268,18 @@ EOF
 
 choose_reality_domain() {
   local xray_bin="$1"
-  local manual country
+  local manual normalized country
 
   while true; do
-    read -rp "Reality 域名/SNI（回车自动按地区选择，手动输入则先探测）: " manual
-    if [ -n "$manual" ]; then
-      if probe_reality_domain "$xray_bin" "$manual"; then
-        SNI="$manual"
+    prompt_read "Reality 域名/SNI（回车自动按地区选择，手动输入则先探测）: " manual
+    normalized=$(normalize_reality_domain "$manual")
+    if [ -n "$normalized" ]; then
+      if [ "$normalized" != "$manual" ]; then
+        yellow "已识别域名: $normalized"
+      fi
+
+      if probe_reality_domain "$xray_bin" "$normalized"; then
+        SNI="$normalized"
         REALITY_COUNTRY="MANUAL"
         green "已使用手动指定的 Reality 域名: $SNI"
         return 0
