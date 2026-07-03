@@ -9,7 +9,7 @@ VLESS / Trojan Reality 一键安装脚本，适合在 VPS 或 LXC 环境中快�
 - 自动检测系统并安装基础依赖
 - 自动安装 Xray Core
 - 一键生成 `VLESS Reality Vision` 节点
-- 一键生成 `VLESS Reality Vision + enc` 节点
+- 一键生成 `VLESS Vision + enc` 节点（不带 TLS / Reality）
 - 一键生成 `Trojan Reality` 节点
 - 一键安装 `SS2022` 节点（基于 shadowsocks-rust）
 - 按服务器地区自动选择 Reality 伪装 CDN 域名
@@ -63,7 +63,7 @@ bash <(curl -L https://raw.githubusercontent.com/Gavin-LHX/fast-vless/main/xrayv
 7) 卸载 Xray
 8) 查看历史节点链接
 9) 安装并配置 SS2022 节点
-10) 安装并配置 VLESS Reality Vision + enc 节点
+10) 安装并配置 VLESS Vision + enc 节点（不带 TLS/Reality）
 11) 卸载 SS2022
 0) 退出
 ```
@@ -115,9 +115,9 @@ www.alibabagroup.com
 
 `www.microsoft.com` 不再作为默认域名，仅作为所有 CDN 候选都失败后的最后兜底，并且使用前同样必须通过 `xray tls ping` 探测。
 
-## VLESS Reality Vision + enc
+## VLESS Vision + enc
 
-菜单 `10` 会生成启用 VLESS Encryption 的 Reality Vision 节点。
+菜单 `10` 会生成启用 VLESS Encryption 的 Vision 节点，不使用 TLS / Reality。
 
 脚本会调用 Xray 官方命令：
 
@@ -129,6 +129,8 @@ xray vlessenc
 
 - 服务端配置写入 `decryption`
 - 客户端链接写入 `encryption`
+- 传输安全为 `security=none`
+- 不生成 `sni`、`pbk`、`sid`、`fp` 等 Reality/TLS 参数
 
 生成的链接会比较长，这是 ML-KEM-768 方案的正常现象。
 

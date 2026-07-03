@@ -622,24 +622,14 @@ EOF
   read -rp "按任意键返回菜单..."
 }
 
-install_vless_reality_vision_enc() {
+install_vless_vision_enc() {
   check_and_install_xray
   XRAY_BIN=$(command -v xray || echo "/usr/local/bin/xray")
   read -rp "监听端口（如 443）: " PORT
   read -rp "节点备注: " REMARK
-  choose_reality_domain "$XRAY_BIN"
   generate_vless_enc_pair "$XRAY_BIN"
 
   UUID=$(cat /proc/sys/kernel/random/uuid)
-  KEYS=$($XRAY_BIN x25519)
-  PRIV_KEY=$(printf '%s\n' "$KEYS" | awk -F': ' '/Private(Key| key)/ {print $2; exit}')
-  PUB_KEY=$(printf '%s\n' "$KEYS" | awk -F': ' '/PublicKey|Public key|Password \(PublicKey\)/ {print $2; exit}')
-  if [ -z "$PRIV_KEY" ] || [ -z "$PUB_KEY" ]; then
-    red "Failed to parse x25519 keypair. Please check Xray output."
-    echo "$KEYS"
-    exit 1
-  fi
-  SHORT_ID=$(head -c 4 /dev/urandom | xxd -p)
 
   mkdir -p /usr/local/etc/xray
   cat > /usr/local/etc/xray/config.json <<EOF
@@ -654,15 +644,7 @@ install_vless_reality_vision_enc() {
     },
     "streamSettings": {
       "network": "tcp",
-      "security": "reality",
-      "realitySettings": {
-        "show": false,
-        "dest": "$SNI:443",
-        "xver": 0,
-        "serverNames": ["$SNI"],
-        "privateKey": "$PRIV_KEY",
-        "shortIds": ["$SHORT_ID"]
-      }
+      "security": "none"
     }
   }],
   "outbounds": [{ "protocol": "freedom" }]
@@ -682,9 +664,9 @@ EOF
   IP=$(get_public_ip)
   ENCRYPTION_PARAM=$(url_encode "$VLESS_ENCRYPTION")
   REMARK_PARAM=$(url_encode "$REMARK")
-  LINK="vless://$UUID@$IP:$PORT?type=tcp&security=reality&encryption=$ENCRYPTION_PARAM&flow=xtls-rprx-vision&sni=$SNI&fp=chrome&pbk=$PUB_KEY&sid=$SHORT_ID#$REMARK_PARAM"
-  save_link_history "VLESS Reality Vision enc" "$REMARK" "$LINK"
-  green "✅ VLESS Reality Vision + enc 节点链接如下："
+  LINK="vless://$UUID@$IP:$PORT?type=tcp&security=none&encryption=$ENCRYPTION_PARAM&flow=xtls-rprx-vision#$REMARK_PARAM"
+  save_link_history "VLESS Vision enc" "$REMARK" "$LINK"
+  green "✅ VLESS Vision + enc 节点链接如下："
   echo "$LINK"
   read -rp "按任意键返回菜单..."
 }
@@ -702,7 +684,7 @@ while true; do
   echo "7) 卸载 Xray"
   echo "8) 查看历史节点链接"
   echo "9) 安装并配置 SS2022 节点"
-  echo "10) 安装并配置 VLESS Reality Vision + enc 节点"
+  echo "10) 安装并配置 VLESS Vision + enc 节点（不带 TLS/Reality）"
   echo "11) 卸载 SS2022"
   echo "0) 退出"
   echo
@@ -851,7 +833,7 @@ EOF
       ;;
 
     10)
-      install_vless_reality_vision_enc
+      install_vless_vision_enc
       ;;
 
     11)
