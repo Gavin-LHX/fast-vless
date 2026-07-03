@@ -7,6 +7,8 @@ yellow() { echo -e "\033[33m$1\033[0m"; }
 LINK_HISTORY_FILE="/root/xray_link_history.txt"
 REALITY_CERT_MAX=8192
 REALITY_LAST_RESORT_DOMAIN="www.microsoft.com"
+SS_RUST_FALLBACK_VERSION="v1.24.0"
+SS2022_METHOD="2022-blake3-aes-128-gcm"
 
 prompt_read() {
   local prompt="$1"
@@ -18,6 +20,25 @@ prompt_read() {
     read -r -p "$prompt" "$var_name"
   fi
 }
+
+url_encode() {
+  jq -nr --arg v "$1" '$v|@uri'
+}
+
+base64_urlsafe() {
+  printf '%s' "$1" | base64 | tr -d '\n' | tr '+/' '-_' | sed 's/=*$//'
+}
+
+get_public_ip() {
+  local ip
+
+  ip=$(curl -fsSL --max-time 8 https://ipv4.ip.sb 2>/dev/null || true)
+  if [ -z "$ip" ]; then
+    ip=$(curl -fsSL --max-time 8 https://ifconfig.me 2>/dev/null || true)
+  fi
+  printf '%s\n' "$ip"
+}
+
 #====== 安装依赖 ======
 detect_os() {
   if [ -f /etc/os-release ]; then
@@ -34,15 +55,15 @@ install_dependencies() {
   case "$OS" in
     ubuntu|debian)
       sudo apt update
-      sudo apt install -y curl wget xz-utils jq xxd >/dev/null 2>&1
+      sudo apt install -y curl wget xz-utils jq xxd openssl tar >/dev/null 2>&1
       ;;
     centos|rhel|rocky|alma)
       sudo yum install -y epel-release
-      sudo yum install -y curl wget xz jq vim-common >/dev/null 2>&1
+      sudo yum install -y curl wget xz jq vim-common openssl tar >/dev/null 2>&1
       ;;
     alpine)
       sudo apk update
-      sudo apk add --no-cache curl wget xz jq vim bash openssl
+      sudo apk add --no-cache curl wget xz jq vim bash openssl tar
       ;;
     *)
       red "不支持的系统: $OS"
@@ -302,6 +323,244 @@ choose_reality_domain() {
   done
 }
 
+get_latest_shadowsocks_rust_version() {
+  local version
+
+  version=$(curl -fsSL --max-time 10 https://api.github.com/repos/shadowsocks/shadowsocks-rust/releases/latest 2>/dev/null | jq -r '.tag_name // empty' 2>/dev/null || true)
+  version=${version:-$SS_RUST_FALLBACK_VERSION}
+  printf '%s\n' "$version"
+}
+
+get_shadowsocks_rust_target() {
+  local flavor="$1"
+  local arch
+  local float_suffix
+
+  arch=$(uname -m)
+  case "$arch" in
+    x86_64|amd64)
+      printf 'x86_64-unknown-linux-%s\n' "$flavor"
+      ;;
+    aarch64|arm64)
+      printf 'aarch64-unknown-linux-%s\n' "$flavor"
+      ;;
+    armv7l|armv7)
+      if [ "$flavor" = "musl" ]; then
+        printf 'armv7-unknown-linux-musleabihf\n'
+      else
+        printf 'armv7-unknown-linux-gnueabihf\n'
+      fi
+      ;;
+    armv6l|arm)
+      if grep -qw vfp /proc/cpuinfo 2>/dev/null; then
+        float_suffix="eabihf"
+      else
+        float_suffix="eabi"
+      fi
+      if [ "$flavor" = "musl" ]; then
+        printf 'arm-unknown-linux-musl%s\n' "$float_suffix"
+      else
+        printf 'arm-unknown-linux-gnu%s\n' "$float_suffix"
+      fi
+      ;;
+    i386|i686)
+      printf 'i686-unknown-linux-musl\n'
+      ;;
+    mips)
+      [ "$flavor" = "musl" ] && return 1
+      printf 'mips-unknown-linux-gnu\n'
+      ;;
+    mipsel)
+      [ "$flavor" = "musl" ] && return 1
+      printf 'mipsel-unknown-linux-gnu\n'
+      ;;
+    mips64el)
+      [ "$flavor" = "musl" ] && return 1
+      printf 'mips64el-unknown-linux-gnuabi64\n'
+      ;;
+    riscv64)
+      printf 'riscv64gc-unknown-linux-%s\n' "$flavor"
+      ;;
+    loongarch64)
+      printf 'loongarch64-unknown-linux-%s\n' "$flavor"
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+check_and_install_shadowsocks_rust() {
+  local flavor version target url tmp_dir ssserver_path sslocal_path
+
+  if command -v ssserver >/dev/null 2>&1; then
+    green "✅ shadowsocks-rust 已安装，跳过下载"
+    return 0
+  fi
+
+  if [ "$OS" = "alpine" ]; then
+    flavor="musl"
+  else
+    flavor="gnu"
+  fi
+
+  if ! target=$(get_shadowsocks_rust_target "$flavor"); then
+    red "❌ 当前架构不支持 shadowsocks-rust 自动安装: $(uname -m) / $flavor"
+    exit 1
+  fi
+
+  version=$(get_latest_shadowsocks_rust_version)
+  url="https://github.com/shadowsocks/shadowsocks-rust/releases/download/$version/shadowsocks-$version.$target.tar.xz"
+  tmp_dir=$(mktemp -d)
+
+  green "正在下载 shadowsocks-rust $version ($target)..."
+  if ! wget -q -O "$tmp_dir/shadowsocks.tar.xz" "$url"; then
+    if [ "$version" != "$SS_RUST_FALLBACK_VERSION" ]; then
+      yellow "latest 下载失败，回退到 $SS_RUST_FALLBACK_VERSION"
+      version="$SS_RUST_FALLBACK_VERSION"
+      url="https://github.com/shadowsocks/shadowsocks-rust/releases/download/$version/shadowsocks-$version.$target.tar.xz"
+      wget -q -O "$tmp_dir/shadowsocks.tar.xz" "$url" || {
+        rm -rf "$tmp_dir"
+        red "❌ shadowsocks-rust 下载失败: $url"
+        exit 1
+      }
+    else
+      rm -rf "$tmp_dir"
+      red "❌ shadowsocks-rust 下载失败: $url"
+      exit 1
+    fi
+  fi
+
+  tar -xJf "$tmp_dir/shadowsocks.tar.xz" -C "$tmp_dir"
+  ssserver_path=$(find "$tmp_dir" -type f -name ssserver | head -n 1)
+  sslocal_path=$(find "$tmp_dir" -type f -name sslocal | head -n 1)
+  if [ -z "$ssserver_path" ] || [ -z "$sslocal_path" ]; then
+    rm -rf "$tmp_dir"
+    red "❌ shadowsocks-rust 压缩包中未找到 ssserver/sslocal"
+    exit 1
+  fi
+
+  mv "$ssserver_path" /usr/local/bin/ssserver
+  mv "$sslocal_path" /usr/local/bin/sslocal
+  chmod +x /usr/local/bin/ssserver /usr/local/bin/sslocal
+  rm -rf "$tmp_dir"
+  green "✅ shadowsocks-rust 安装完成"
+}
+
+install_ss2022() {
+  local port remark password encoded_userinfo encoded_remark ip link
+
+  check_and_install_shadowsocks_rust
+  prompt_read "SS2022 监听端口（默认 8388）: " port
+  port=${port:-8388}
+  prompt_read "节点备注（默认 SS2022）: " remark
+  remark=${remark:-SS2022}
+  password=$(openssl rand -base64 16)
+
+  mkdir -p /etc/shadowsocks
+  cat > /etc/shadowsocks/config.json <<EOF
+{
+  "server": "::",
+  "server_port": $port,
+  "password": "$password",
+  "method": "$SS2022_METHOD",
+  "mode": "tcp_and_udp",
+  "fast_open": true,
+  "timeout": 300
+}
+EOF
+
+  if [ "$OS" = "alpine" ]; then
+    cat > /etc/init.d/shadowsocks <<'EOF'
+#!/sbin/openrc-run
+
+name="shadowsocks"
+description="Shadowsocks-Rust Server"
+command="/usr/local/bin/ssserver"
+command_args="-c /etc/shadowsocks/config.json"
+command_background="yes"
+pidfile="/run/${name}.pid"
+
+depend() {
+    need net
+}
+
+start_pre() {
+    ulimit -n 51200
+}
+EOF
+    chmod +x /etc/init.d/shadowsocks
+    rc-update add shadowsocks default
+    rc-service shadowsocks restart || rc-service shadowsocks start
+  else
+    cat > /etc/systemd/system/shadowsocks.service <<'EOF'
+[Unit]
+Description=Shadowsocks-Rust Server
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/ssserver -c /etc/shadowsocks/config.json
+Restart=always
+RestartSec=3
+LimitNOFILE=51200
+
+[Install]
+WantedBy=multi-user.target
+EOF
+    systemctl daemon-reload
+    systemctl enable shadowsocks
+    systemctl restart shadowsocks
+  fi
+
+  ip=$(get_public_ip)
+  encoded_userinfo=$(base64_urlsafe "$SS2022_METHOD:$password")
+  encoded_remark=$(url_encode "$remark")
+  link="ss://$encoded_userinfo@$ip:$port#$encoded_remark"
+  save_link_history "SS2022" "$remark" "$link"
+  green "✅ SS2022 节点链接如下："
+  echo "$link"
+  read -rp "按任意键返回菜单..."
+}
+
+uninstall_ss2022() {
+  if [ "$OS" = "alpine" ]; then
+    rc-service shadowsocks stop >/dev/null 2>&1 || true
+    rc-update del shadowsocks default >/dev/null 2>&1 || true
+    rm -f /etc/init.d/shadowsocks
+  else
+    systemctl stop shadowsocks >/dev/null 2>&1 || true
+    systemctl disable shadowsocks >/dev/null 2>&1 || true
+    rm -f /etc/systemd/system/shadowsocks.service
+    systemctl daemon-reload >/dev/null 2>&1 || true
+  fi
+
+  rm -rf /etc/shadowsocks
+  rm -f /usr/local/bin/ssserver /usr/local/bin/sslocal
+  green "✅ SS2022 已卸载"
+  read -rp "按任意键返回菜单..."
+}
+
+generate_vless_enc_pair() {
+  local xray_bin="$1"
+  local output section
+
+  output=$("$xray_bin" vlessenc 2>&1 || true)
+  section=$(printf '%s\n' "$output" | awk '
+    /Authentication: ML-KEM-768/ { flag=1; next }
+    /^Authentication:/ && flag { flag=0 }
+    flag { print }
+  ')
+  VLESS_DECRYPTION=$(printf '%s\n' "$section" | awk -F'"' '/"decryption":/ { print $4; exit }')
+  VLESS_ENCRYPTION=$(printf '%s\n' "$section" | awk -F'"' '/"encryption":/ { print $4; exit }')
+
+  if [ -z "$VLESS_DECRYPTION" ] || [ -z "$VLESS_ENCRYPTION" ]; then
+    red "❌ 无法解析 xray vlessenc 的 ML-KEM-768 输出"
+    echo "$output"
+    exit 1
+  fi
+}
+
 install_trojan_reality() {
   check_and_install_xray
   XRAY_BIN=$(command -v xray || echo "/usr/local/bin/xray")
@@ -362,6 +621,74 @@ EOF
   echo "$LINK"
   read -rp "按任意键返回菜单..."
 }
+
+install_vless_reality_vision_enc() {
+  check_and_install_xray
+  XRAY_BIN=$(command -v xray || echo "/usr/local/bin/xray")
+  read -rp "监听端口（如 443）: " PORT
+  read -rp "节点备注: " REMARK
+  choose_reality_domain "$XRAY_BIN"
+  generate_vless_enc_pair "$XRAY_BIN"
+
+  UUID=$(cat /proc/sys/kernel/random/uuid)
+  KEYS=$($XRAY_BIN x25519)
+  PRIV_KEY=$(printf '%s\n' "$KEYS" | awk -F': ' '/Private(Key| key)/ {print $2; exit}')
+  PUB_KEY=$(printf '%s\n' "$KEYS" | awk -F': ' '/PublicKey|Public key|Password \(PublicKey\)/ {print $2; exit}')
+  if [ -z "$PRIV_KEY" ] || [ -z "$PUB_KEY" ]; then
+    red "Failed to parse x25519 keypair. Please check Xray output."
+    echo "$KEYS"
+    exit 1
+  fi
+  SHORT_ID=$(head -c 4 /dev/urandom | xxd -p)
+
+  mkdir -p /usr/local/etc/xray
+  cat > /usr/local/etc/xray/config.json <<EOF
+{
+  "log": { "loglevel": "warning" },
+  "inbounds": [{
+    "port": $PORT,
+    "protocol": "vless",
+    "settings": {
+      "clients": [{ "id": "$UUID", "email": "$REMARK" , "flow": "xtls-rprx-vision"}],
+      "decryption": "$VLESS_DECRYPTION"
+    },
+    "streamSettings": {
+      "network": "tcp",
+      "security": "reality",
+      "realitySettings": {
+        "show": false,
+        "dest": "$SNI:443",
+        "xver": 0,
+        "serverNames": ["$SNI"],
+        "privateKey": "$PRIV_KEY",
+        "shortIds": ["$SHORT_ID"]
+      }
+    }
+  }],
+  "outbounds": [{ "protocol": "freedom" }]
+}
+EOF
+
+  "$XRAY_BIN" run -test -config /usr/local/etc/xray/config.json >/dev/null
+  if [ "$OS" = "alpine" ]; then
+      rc-service xray restart
+      rc-update add xray default
+  else
+      systemctl daemon-reexec
+      systemctl restart xray
+      systemctl enable xray
+  fi
+
+  IP=$(get_public_ip)
+  ENCRYPTION_PARAM=$(url_encode "$VLESS_ENCRYPTION")
+  REMARK_PARAM=$(url_encode "$REMARK")
+  LINK="vless://$UUID@$IP:$PORT?type=tcp&security=reality&encryption=$ENCRYPTION_PARAM&flow=xtls-rprx-vision&sni=$SNI&fp=chrome&pbk=$PUB_KEY&sid=$SHORT_ID#$REMARK_PARAM"
+  save_link_history "VLESS Reality Vision enc" "$REMARK" "$LINK"
+  green "✅ VLESS Reality Vision + enc 节点链接如下："
+  echo "$LINK"
+  read -rp "按任意键返回菜单..."
+}
+
 #====== 主菜单 ======
 while true; do
   clear
@@ -374,6 +701,9 @@ while true; do
   echo "6) Ookla Speedtest 测试"
   echo "7) 卸载 Xray"
   echo "8) 查看历史节点链接"
+  echo "9) 安装并配置 SS2022 节点"
+  echo "10) 安装并配置 VLESS Reality Vision + enc 节点"
+  echo "11) 卸载 SS2022"
   echo "0) 退出"
   echo
   read -rp "请选择操作: " choice
@@ -514,6 +844,18 @@ EOF
 
     8)
       show_link_history
+      ;;
+
+    9)
+      install_ss2022
+      ;;
+
+    10)
+      install_vless_reality_vision_enc
+      ;;
+
+    11)
+      uninstall_ss2022
       ;;
 
     0)

@@ -9,7 +9,9 @@ VLESS / Trojan Reality 一键安装脚本，适合在 VPS 或 LXC 环境中快�
 - 自动检测系统并安装基础依赖
 - 自动安装 Xray Core
 - 一键生成 `VLESS Reality Vision` 节点
+- 一键生成 `VLESS Reality Vision + enc` 节点
 - 一键生成 `Trojan Reality` 节点
+- 一键安装 `SS2022` 节点（基于 shadowsocks-rust）
 - 按服务器地区自动选择 Reality 伪装 CDN 域名
 - 使用 `xray tls ping` 探测证书链长度，避免超过 Reality 可用上限
 - 支持手动输入 Reality 域名 / SNI，并在使用前先探测可用性
@@ -21,12 +23,15 @@ VLESS / Trojan Reality 一键安装脚本，适合在 VPS 或 LXC 环境中快�
 - 检查 IP 纯净度和流媒体解锁
 - 运行 Ookla Speedtest 测速
 - 卸载 Xray
+- 卸载 SS2022
 
 ## 支持系统
 
 - Debian / Ubuntu
 - CentOS / RHEL / Rocky Linux / AlmaLinux
 - Alpine Linux
+
+SS2022 会按系统和架构自动选择 shadowsocks-rust 的 Linux gnu / musl 版本。Alpine 使用 musl 版本，其他系统默认使用 gnu 版本。
 
 请使用 `root` 权限运行脚本。如果当前用户不是 root，可以先执行：
 
@@ -57,6 +62,9 @@ bash <(curl -L https://raw.githubusercontent.com/Gavin-LHX/fast-vless/main/xrayv
 6) Ookla Speedtest 测试
 7) 卸载 Xray
 8) 查看历史节点链接
+9) 安装并配置 SS2022 节点
+10) 安装并配置 VLESS Reality Vision + enc 节点
+11) 卸载 SS2022
 0) 退出
 ```
 
@@ -107,9 +115,45 @@ www.alibabagroup.com
 
 `www.microsoft.com` 不再作为默认域名，仅作为所有 CDN 候选都失败后的最后兜底，并且使用前同样必须通过 `xray tls ping` 探测。
 
+## VLESS Reality Vision + enc
+
+菜单 `10` 会生成启用 VLESS Encryption 的 Reality Vision 节点。
+
+脚本会调用 Xray 官方命令：
+
+```bash
+xray vlessenc
+```
+
+并默认使用 `Authentication: ML-KEM-768` 这一组后量子字段：
+
+- 服务端配置写入 `decryption`
+- 客户端链接写入 `encryption`
+
+生成的链接会比较长，这是 ML-KEM-768 方案的正常现象。
+
+## SS2022
+
+菜单 `9` 会安装 shadowsocks-rust 并生成 SS2022 节点。
+
+默认配置：
+
+- method：`2022-blake3-aes-128-gcm`
+- 默认端口：`8388`
+- 密码：自动执行 `openssl rand -base64 16` 生成
+- 模式：`tcp_and_udp`
+- 配置文件：`/etc/shadowsocks/config.json`
+
+服务路径：
+
+- systemd：`/etc/systemd/system/shadowsocks.service`
+- Alpine / OpenRC：`/etc/init.d/shadowsocks`
+
+菜单 `11` 可卸载 SS2022，会停止服务、取消开机启动，并删除 shadowsocks-rust 二进制和 `/etc/shadowsocks` 配置目录。
+
 ## 历史链接
 
-每次成功生成 VLESS 或 Trojan 节点后，脚本会自动把链接保存到：
+每次成功生成 VLESS、Trojan 或 SS2022 节点后，脚本会自动把链接保存到：
 
 ```bash
 /root/xray_link_history.txt
@@ -137,6 +181,7 @@ www.alibabagroup.com
 - 每次重新生成 VLESS 或 Trojan 节点都会覆盖当前 Xray 配置
 - 开启 BBR 功能会重写 `/etc/sysctl.conf`，如服务器已有自定义内核参数，请先自行备份
 - 卸载 Xray 会删除 `/usr/local/etc/xray` 和 `/usr/local/bin/xray`
+- 卸载 SS2022 会删除 `/etc/shadowsocks`、`/usr/local/bin/ssserver` 和 `/usr/local/bin/sslocal`
 - 历史链接文件不会在卸载 Xray 时自动删除
 - 自动候选采用保守域名池，不等同于从大陆网络做实时 GFW 可达性检测
 
@@ -149,3 +194,9 @@ www.alibabagroup.com
 ```
 
 即可停止并禁用 Xray 服务，同时删除 Xray 配置和二进制文件。
+
+如需卸载 SS2022，在主菜单选择：
+
+```text
+11) 卸载 SS2022
+```
