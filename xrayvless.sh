@@ -622,7 +622,7 @@ EOF
   read -rp "按任意键返回菜单..."
 }
 
-install_vless_vision_enc() {
+install_vless_enc_vision_flow() {
   check_and_install_xray
   XRAY_BIN=$(command -v xray || echo "/usr/local/bin/xray")
   read -rp "监听端口（如 443）: " PORT
@@ -665,8 +665,8 @@ EOF
   ENCRYPTION_PARAM=$(url_encode "$VLESS_ENCRYPTION")
   REMARK_PARAM=$(url_encode "$REMARK")
   LINK="vless://$UUID@$IP:$PORT?type=tcp&security=none&encryption=$ENCRYPTION_PARAM&flow=xtls-rprx-vision#$REMARK_PARAM"
-  save_link_history "VLESS Vision enc" "$REMARK" "$LINK"
-  green "✅ VLESS Vision + enc 节点链接如下："
+  save_link_history "VLESS enc Vision flow" "$REMARK" "$LINK"
+  green "✅ VLESS + enc + Vision flow 节点链接如下："
   echo "$LINK"
   read -rp "按任意键返回菜单..."
 }
@@ -684,7 +684,7 @@ while true; do
   echo "7) 卸载 Xray"
   echo "8) 查看历史节点链接"
   echo "9) 安装并配置 SS2022 节点"
-  echo "10) 安装并配置 VLESS Vision + enc 节点（不带 TLS/Reality）"
+  echo "10) 安装并配置 VLESS + enc + Vision flow 节点"
   echo "11) 卸载 SS2022"
   echo "0) 退出"
   echo
@@ -833,7 +833,7 @@ EOF
       ;;
 
     10)
-      install_vless_vision_enc
+      install_vless_enc_vision_flow
       ;;
 
     11)
