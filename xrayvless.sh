@@ -486,7 +486,7 @@ depend() {
 }
 
 start_pre() {
-    ulimit -n 51200
+    ulimit -Sn 51200 2>/dev/null || true
 }
 EOF
     chmod +x /etc/init.d/shadowsocks
