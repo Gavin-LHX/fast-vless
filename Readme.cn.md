@@ -7,6 +7,7 @@ VLESS / Trojan Reality 一键安装脚本，适合在 VPS 或 LXC 环境中快�
 ## 功能
 
 - 自动检测系统并安装基础依赖
+- 创建节点前自动安装 Chrony、同步系统时间并启用开机自启
 - 自动安装 Xray Core
 - 一键生成 `VLESS Reality Vision` 节点
 - 一键生成 `VLESS + enc + Vision flow` 节点
@@ -24,6 +25,7 @@ VLESS / Trojan Reality 一键安装脚本，适合在 VPS 或 LXC 环境中快�
 - 运行 Ookla Speedtest 测速
 - 卸载 Xray
 - 卸载 SS2022
+- 从主菜单手动执行 Chrony 时间同步
 
 ## 支持系统
 
@@ -32,6 +34,8 @@ VLESS / Trojan Reality 一键安装脚本，适合在 VPS 或 LXC 环境中快�
 - Alpine Linux
 
 SS2022 会按系统和架构自动选择 shadowsocks-rust 的 Linux gnu / musl 版本。Alpine 使用 musl 版本，其他系统默认使用 gnu 版本。
+
+Chrony 会按系统自动选择安装和服务管理方式：Debian / Ubuntu 使用 `apt` 与 `chrony.service`，CentOS / RHEL / Rocky Linux / AlmaLinux 使用 `dnf` 或 `yum` 与 `chronyd.service`，Alpine 使用 `apk` 安装 `chrony`（新版会补装 `chrony-openrc`）并启用 OpenRC 的 `chronyd` 服务。
 
 请使用 `root` 权限运行脚本。如果当前用户不是 root，可以先执行：
 
@@ -65,8 +69,28 @@ bash <(curl -L https://raw.githubusercontent.com/Gavin-LHX/fast-vless/main/xrayv
 9) 安装并配置 SS2022 节点
 10) 安装并配置 VLESS + enc + Vision flow 节点
 11) 卸载 SS2022
+12) 安装 Chrony 并同步系统时间
 0) 退出
 ```
+
+## Chrony 时间同步
+
+创建以下节点前，脚本会自动安装并运行 Chrony：
+
+- `1) VLESS Reality Vision`
+- `2) Trojan Reality`
+- `9) SS2022`
+- `10) VLESS + enc + Vision flow`
+
+脚本会保留发行版自带的 Chrony 配置和 NTP 源，启用服务开机自启，并使用 `chronyc` 触发快速采样和校时。也可以在主菜单选择：
+
+```text
+12) 安装 Chrony 并同步系统时间
+```
+
+单独安装或重新执行时间同步。同步完成后会显示当前系统时间和 Chrony 跟踪状态。
+
+部分未授权调整系统时间的 LXC 容器会由宿主机统一维护时钟。遇到这种情况时，脚本会给出警告并继续创建节点，不会因为 Chrony 权限不足中断部署。
 
 ## Reality 域名选择
 
@@ -186,6 +210,7 @@ xray vlessenc
 - 卸载 Xray 会删除 `/usr/local/etc/xray` 和 `/usr/local/bin/xray`
 - 卸载 SS2022 会删除 `/etc/shadowsocks`、`/usr/local/bin/ssserver` 和 `/usr/local/bin/sslocal`
 - 历史链接文件不会在卸载 Xray 时自动删除
+- Chrony 使用系统自带的默认 NTP 源，脚本不会覆盖已有 `/etc/chrony.conf` 或 `/etc/chrony/chrony.conf`
 - 自动候选采用保守域名池，不等同于从大陆网络做实时 GFW 可达性检测
 
 ## 卸载

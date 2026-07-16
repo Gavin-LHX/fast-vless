@@ -74,6 +74,156 @@ install_dependencies() {
 # 安装前置
 install_dependencies
 
+install_chrony_package() {
+  local package_manager
+
+  if command -v chronyc >/dev/null 2>&1; then
+    if [ "$OS" = "alpine" ] && [ ! -x /etc/init.d/chronyd ]; then
+      green "正在补装 Chrony OpenRC 服务..."
+      if ! apk add --no-cache chrony-openrc >/dev/null 2>&1; then
+        red "❌ 未找到 Alpine Chrony OpenRC 服务脚本"
+        return 1
+      fi
+    fi
+    return 0
+  fi
+
+  green "正在安装 Chrony..."
+  case "$OS" in
+    ubuntu|debian)
+      if ! apt-get update >/dev/null 2>&1; then
+        red "❌ apt 软件源更新失败，无法安装 Chrony"
+        return 1
+      fi
+      if ! DEBIAN_FRONTEND=noninteractive apt-get install -y chrony >/dev/null 2>&1; then
+        red "❌ Chrony 安装失败"
+        return 1
+      fi
+      ;;
+    centos|rhel|rocky|alma)
+      if command -v dnf >/dev/null 2>&1; then
+        package_manager="dnf"
+      else
+        package_manager="yum"
+      fi
+      if ! "$package_manager" install -y chrony >/dev/null 2>&1; then
+        red "❌ Chrony 安装失败"
+        return 1
+      fi
+      ;;
+    alpine)
+      if ! apk add --no-cache chrony >/dev/null 2>&1; then
+        red "❌ Chrony 安装失败"
+        return 1
+      fi
+      if [ ! -x /etc/init.d/chronyd ]; then
+        apk add --no-cache chrony-openrc >/dev/null 2>&1 || true
+      fi
+      if [ ! -x /etc/init.d/chronyd ]; then
+        red "❌ Chrony 已安装，但未找到 Alpine OpenRC 服务脚本"
+        return 1
+      fi
+      ;;
+    *)
+      red "❌ 当前系统不支持自动安装 Chrony: $OS"
+      return 1
+      ;;
+  esac
+
+  if ! command -v chronyc >/dev/null 2>&1; then
+    red "❌ Chrony 安装完成后仍未找到 chronyc"
+    return 1
+  fi
+  green "✅ Chrony 安装完成"
+}
+
+start_chrony_service() {
+  local service_name alternate_service
+
+  if [ "$OS" = "alpine" ]; then
+    if ! command -v rc-service >/dev/null 2>&1; then
+      red "❌ 未找到 OpenRC，无法启动 Chrony"
+      return 1
+    fi
+    rc-update add chronyd default >/dev/null 2>&1 || true
+    if ! rc-service chronyd status >/dev/null 2>&1; then
+      if ! rc-service chronyd start >/dev/null 2>&1; then
+        red "❌ chronyd 服务启动失败"
+        return 1
+      fi
+    fi
+    return 0
+  fi
+
+  if ! command -v systemctl >/dev/null 2>&1; then
+    red "❌ 未找到 systemd，无法启动 Chrony"
+    return 1
+  fi
+
+  case "$OS" in
+    ubuntu|debian)
+      service_name="chrony"
+      alternate_service="chronyd"
+      ;;
+    *)
+      service_name="chronyd"
+      alternate_service="chrony"
+      ;;
+  esac
+
+  if systemctl enable --now "$service_name" >/dev/null 2>&1; then
+    return 0
+  fi
+  if systemctl enable --now "$alternate_service" >/dev/null 2>&1; then
+    return 0
+  fi
+
+  red "❌ Chrony 服务启动失败"
+  return 1
+}
+
+sync_time_with_chrony() {
+  local tracking
+
+  green "正在使用 Chrony 同步系统时间..."
+  if ! install_chrony_package; then
+    return 1
+  fi
+  if ! start_chrony_service; then
+    return 1
+  fi
+
+  chronyc -a online >/dev/null 2>&1 || true
+  chronyc -a makestep 0.1 1 >/dev/null 2>&1 || true
+  chronyc -a burst 4/4 >/dev/null 2>&1 || true
+
+  if ! chronyc waitsync 15 1.0 0.0 1 >/dev/null 2>&1; then
+    chronyc -a makestep >/dev/null 2>&1 || true
+    if ! chronyc waitsync 3 1.0 0.0 1 >/dev/null 2>&1; then
+      yellow "⚠️ Chrony 服务已启用，但暂未确认时间同步完成"
+      return 1
+    fi
+  fi
+
+  chronyc -a makestep >/dev/null 2>&1 || true
+  tracking=$(chronyc tracking 2>/dev/null | awk -F': ' '
+    /Stratum|System time|Last offset|Leap status/ {
+      gsub(/^[[:space:]]+|[[:space:]]+$/, "", $1)
+      gsub(/^[[:space:]]+|[[:space:]]+$/, "", $2)
+      printf "%s: %s; ", $1, $2
+    }
+  ')
+  green "✅ Chrony 时间同步完成，服务已设为开机启动"
+  [ -n "$tracking" ] && echo "$tracking"
+  green "当前系统时间: $(date '+%Y-%m-%d %H:%M:%S %Z')"
+}
+
+sync_time_before_node_creation() {
+  if ! sync_time_with_chrony; then
+    yellow "⚠️ 将继续创建节点。部分 LXC 容器没有调整系统时钟的权限，请确认宿主机时间准确。"
+  fi
+}
+
 #====== 检测xray是否安装 =====
 check_and_install_xray() {
   if command -v xray >/dev/null 2>&1; then
@@ -450,6 +600,7 @@ check_and_install_shadowsocks_rust() {
 install_ss2022() {
   local port remark password encoded_userinfo encoded_remark ip link
 
+  sync_time_before_node_creation
   check_and_install_shadowsocks_rust
   prompt_read "SS2022 监听端口（默认 8388）: " port
   port=${port:-8388}
@@ -562,6 +713,7 @@ generate_vless_enc_pair() {
 }
 
 install_trojan_reality() {
+  sync_time_before_node_creation
   check_and_install_xray
   XRAY_BIN=$(command -v xray || echo "/usr/local/bin/xray")
   read -rp "监听端口（如 443）: " PORT
@@ -623,6 +775,7 @@ EOF
 }
 
 install_vless_enc_vision_flow() {
+  sync_time_before_node_creation
   check_and_install_xray
   XRAY_BIN=$(command -v xray || echo "/usr/local/bin/xray")
   read -rp "监听端口（如 443）: " PORT
@@ -686,12 +839,14 @@ while true; do
   echo "9) 安装并配置 SS2022 节点"
   echo "10) 安装并配置 VLESS + enc + Vision flow 节点"
   echo "11) 卸载 SS2022"
+  echo "12) 安装 Chrony 并同步系统时间"
   echo "0) 退出"
   echo
   read -rp "请选择操作: " choice
 
   case "$choice" in
     1)
+      sync_time_before_node_creation
       check_and_install_xray
       XRAY_BIN=$(command -v xray || echo "/usr/local/bin/xray")
       read -rp "监听端口（如 443）: " PORT
@@ -838,6 +993,13 @@ EOF
 
     11)
       uninstall_ss2022
+      ;;
+
+    12)
+      if ! sync_time_with_chrony; then
+        yellow "⚠️ 请检查网络、NTP 可达性，或容器是否具有调整系统时间的权限。"
+      fi
+      read -rp "按任意键返回菜单..."
       ;;
 
     0)
