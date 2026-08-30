@@ -4,20 +4,28 @@ set -e
 green() { echo -e "\033[32m$1\033[0m"; }
 red()   { echo -e "\033[31m$1\033[0m"; }
 yellow() { echo -e "\033[33m$1\033[0m"; } 
+
+if [ "$(id -u)" -ne 0 ]; then
+  red "❌ 请使用 root 权限运行本脚本"
+  exit 1
+fi
+
 LINK_HISTORY_FILE="/root/xray_link_history.txt"
 REALITY_CERT_MAX=8192
 REALITY_LAST_RESORT_DOMAIN="www.microsoft.com"
 SS_RUST_FALLBACK_VERSION="v1.24.0"
 SS2022_METHOD="2022-blake3-aes-128-gcm"
+SNELL_VERSION="v5.0.1"
+SNELL_DOWNLOAD_BASE="https://dl.nssurge.com/snell"
 
 prompt_read() {
   local prompt="$1"
   local var_name="$2"
 
   if [ -t 0 ]; then
-    read -e -r -p "$prompt" "$var_name"
+    read -e -r -p "$prompt" "${var_name?}"
   else
-    read -r -p "$prompt" "$var_name"
+    read -r -p "$prompt" "${var_name?}"
   fi
 }
 
@@ -54,16 +62,21 @@ install_dependencies() {
   green "检测到系统: $OS，安装依赖..."
   case "$OS" in
     ubuntu|debian)
-      sudo apt update
-      sudo apt install -y curl wget xz-utils jq xxd openssl tar >/dev/null 2>&1
+      apt-get update
+      DEBIAN_FRONTEND=noninteractive apt-get install -y curl wget unzip xz-utils jq xxd openssl tar >/dev/null 2>&1
       ;;
     centos|rhel|rocky|alma)
-      sudo yum install -y epel-release
-      sudo yum install -y curl wget xz jq vim-common openssl tar >/dev/null 2>&1
+      if command -v dnf >/dev/null 2>&1; then
+        dnf install -y epel-release >/dev/null 2>&1 || true
+        dnf install -y curl wget unzip xz jq vim-common openssl tar >/dev/null 2>&1
+      else
+        yum install -y epel-release >/dev/null 2>&1 || true
+        yum install -y curl wget unzip xz jq vim-common openssl tar >/dev/null 2>&1
+      fi
       ;;
     alpine)
-      sudo apk update
-      sudo apk add --no-cache curl wget xz jq vim bash openssl tar
+      apk update
+      apk add --no-cache curl wget unzip xz jq vim bash openssl tar openrc
       ;;
     *)
       red "不支持的系统: $OS"
@@ -274,7 +287,7 @@ show_link_history() {
   if [ -s "$LINK_HISTORY_FILE" ]; then
     cat "$LINK_HISTORY_FILE"
   else
-    yellow "暂无历史节点链接。安装 VLESS 或 Trojan 节点后会自动保存。"
+    yellow "暂无历史节点配置。安装 VLESS、Trojan、SS2022 或 Snell 节点后会自动保存。"
   fi
   read -rp "按任意键返回菜单..."
 }
@@ -692,6 +705,434 @@ uninstall_ss2022() {
   read -rp "按任意键返回菜单..."
 }
 
+get_snell_arch() {
+  case "$(uname -m)" in
+    x86_64|amd64)
+      printf 'amd64\n'
+      ;;
+    i386|i486|i586|i686)
+      printf 'i386\n'
+      ;;
+    aarch64|arm64)
+      printf 'aarch64\n'
+      ;;
+    armv7l|armv7)
+      printf 'armv7l\n'
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+get_snell_sha256() {
+  case "$1" in
+    amd64)
+      printf '9bea1c2b9e35b73b31634856c04d18c393072b9e5dcde6a32781d8b8f908c539\n'
+      ;;
+    i386)
+      printf '6a3e30928315427d6f747f26408d0f74eb88f460344d0e1fcb3f7c32c708a09d\n'
+      ;;
+    aarch64)
+      printf '2f178bf5ac468ce1a130454efa40a0603fbbe4e47ecc4880a989f4abc7f824cf\n'
+      ;;
+    armv7l)
+      printf '14489f3e857569c8835dd3598b7ea6bca5371d4290ac7cf0f6c8dfb3381c1fb2\n'
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+check_and_install_snell_server() {
+  local arch url tmp_dir version_output expected_sha actual_sha
+
+  if [ "$OS" = "alpine" ]; then
+    green "正在检查 Snell 的 Alpine glibc 兼容运行库..."
+    if ! apk add --no-cache gcompat libstdc++ libgcc libcap-utils >/dev/null 2>&1; then
+      red "❌ Alpine gcompat 安装失败，无法运行官方 Snell 内核"
+      return 1
+    fi
+  fi
+
+  if [ -x /usr/local/bin/snell-server ]; then
+    version_output=$(/usr/local/bin/snell-server -v 2>&1 || true)
+    if printf '%s\n' "$version_output" | grep -q "snell-server $SNELL_VERSION"; then
+      if [ "$OS" = "alpine" ]; then
+        if setcap cap_net_bind_service=+ep /usr/local/bin/snell-server 2>/dev/null && \
+          getcap /usr/local/bin/snell-server 2>/dev/null | grep -q 'cap_net_bind_service'; then
+          SNELL_ALPINE_LOW_PORT_SUPPORTED=1
+        else
+          SNELL_ALPINE_LOW_PORT_SUPPORTED=0
+        fi
+      fi
+      green "✅ 官方 Snell Server $SNELL_VERSION 已安装，跳过下载"
+      return 0
+    fi
+  fi
+
+  if ! arch=$(get_snell_arch); then
+    red "❌ 官方 Snell Server 不支持当前架构: $(uname -m)"
+    return 1
+  fi
+
+  url="$SNELL_DOWNLOAD_BASE/snell-server-$SNELL_VERSION-linux-$arch.zip"
+  tmp_dir=$(mktemp -d)
+  green "正在下载官方 Snell Server $SNELL_VERSION ($arch)..."
+
+  if ! curl -fL --retry 3 --connect-timeout 10 -o "$tmp_dir/snell-server.zip" "$url"; then
+    rm -rf "$tmp_dir"
+    red "❌ Snell Server 下载失败: $url"
+    return 1
+  fi
+  expected_sha=$(get_snell_sha256 "$arch")
+  actual_sha=$(sha256sum "$tmp_dir/snell-server.zip" | awk '{print $1}')
+  if [ "$actual_sha" != "$expected_sha" ]; then
+    rm -rf "$tmp_dir"
+    red "❌ Snell Server SHA-256 校验失败"
+    return 1
+  fi
+  if ! unzip -q "$tmp_dir/snell-server.zip" -d "$tmp_dir"; then
+    rm -rf "$tmp_dir"
+    red "❌ Snell Server 解压失败"
+    return 1
+  fi
+  if [ ! -f "$tmp_dir/snell-server" ]; then
+    rm -rf "$tmp_dir"
+    red "❌ 官方压缩包中未找到 snell-server"
+    return 1
+  fi
+
+  if [ "$OS" = "alpine" ]; then
+    if ! apk add --no-cache --virtual .snell-install-deps upx >/dev/null 2>&1; then
+      rm -rf "$tmp_dir"
+      red "❌ Alpine UPX 安装失败，无法转换官方 Snell 内核"
+      return 1
+    fi
+    if ! upx -d "$tmp_dir/snell-server" >/dev/null 2>&1; then
+      apk del .snell-install-deps >/dev/null 2>&1 || true
+      rm -rf "$tmp_dir"
+      red "❌ 官方 Snell 内核的 UPX 解包失败"
+      return 1
+    fi
+    apk del .snell-install-deps >/dev/null 2>&1 || true
+  fi
+
+  chmod +x "$tmp_dir/snell-server"
+  version_output=$("$tmp_dir/snell-server" -v 2>&1 || true)
+  if ! printf '%s\n' "$version_output" | grep -q "snell-server $SNELL_VERSION"; then
+    rm -rf "$tmp_dir"
+    red "❌ 下载的 Snell Server 版本校验失败"
+    return 1
+  fi
+
+  install -m 0755 "$tmp_dir/snell-server" /usr/local/bin/snell-server
+  if [ "$OS" = "alpine" ]; then
+    if setcap cap_net_bind_service=+ep /usr/local/bin/snell-server 2>/dev/null && \
+      getcap /usr/local/bin/snell-server 2>/dev/null | grep -q 'cap_net_bind_service'; then
+      SNELL_ALPINE_LOW_PORT_SUPPORTED=1
+    else
+      SNELL_ALPINE_LOW_PORT_SUPPORTED=0
+      yellow "⚠️ 当前 Alpine 文件系统不支持低端口 capability，请使用 1024-65535 端口"
+    fi
+  fi
+  rm -rf "$tmp_dir"
+  green "✅ 官方 Snell Server $SNELL_VERSION 安装完成"
+}
+
+ensure_snell_user() {
+  local user_created=0
+
+  mkdir -p /etc/snell
+  if [ "$OS" = "alpine" ]; then
+    if ! grep -q '^snell:' /etc/group 2>/dev/null; then
+      addgroup -S snell >/dev/null
+    fi
+    if ! id snell >/dev/null 2>&1; then
+      adduser -S -D -H -s /sbin/nologin -G snell snell >/dev/null
+      user_created=1
+    fi
+  else
+    if ! grep -q '^snell:' /etc/group 2>/dev/null; then
+      groupadd --system snell
+    fi
+    if ! id snell >/dev/null 2>&1; then
+      useradd --system --gid snell --no-create-home --shell /usr/sbin/nologin snell
+      user_created=1
+    fi
+  fi
+
+  if [ "$user_created" -eq 1 ]; then
+    touch /etc/snell/.managed-user
+  fi
+}
+
+write_snell_service() {
+  if [ "$OS" = "alpine" ]; then
+    cat > /etc/init.d/snell <<'EOF'
+#!/sbin/openrc-run
+
+name="Snell v5 Server"
+description="Official Snell v5 Proxy Server"
+command="/usr/local/bin/snell-server"
+command_args="-c /etc/snell/snell-server.conf"
+command_user="snell:snell"
+command_background="yes"
+pidfile="/run/${RC_SVCNAME}.pid"
+
+depend() {
+    need net
+    after firewall
+}
+
+start_pre() {
+    ulimit -Sn 65535 2>/dev/null || true
+}
+EOF
+    chmod +x /etc/init.d/snell
+  else
+    cat > /etc/systemd/system/snell.service <<'EOF'
+[Unit]
+Description=Official Snell v5 Proxy Server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=snell
+Group=snell
+ExecStart=/usr/local/bin/snell-server -c /etc/snell/snell-server.conf
+Restart=on-failure
+RestartSec=3
+LimitNOFILE=65535
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target
+EOF
+  fi
+}
+
+start_snell_service() {
+  if [ "$OS" = "alpine" ]; then
+    rc-update add snell default >/dev/null 2>&1 || true
+    if rc-service snell status >/dev/null 2>&1; then
+      rc-service snell restart
+    else
+      rc-service snell start
+    fi
+    sleep 1
+    if ! rc-service snell status >/dev/null 2>&1; then
+      red "❌ Snell OpenRC 服务启动失败"
+      return 1
+    fi
+  else
+    systemctl daemon-reload
+    systemctl enable snell >/dev/null
+    systemctl restart snell
+    if ! systemctl is-active --quiet snell; then
+      systemctl status snell --no-pager || true
+      red "❌ Snell systemd 服务启动失败"
+      return 1
+    fi
+  fi
+}
+
+open_snell_firewall_port() {
+  local port="$1"
+  local proto
+  local state_file="/etc/snell/.managed-firewall"
+  local ufw_added=0 firewalld_added=0
+
+  if [ -f "$state_file" ]; then
+    close_snell_firewall_ports
+  fi
+
+  if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q '^Status: active'; then
+    for proto in tcp udp; do
+      if ! ufw show added 2>/dev/null | grep -Eq "^ufw allow ${port}/${proto}([[:space:]]|$)"; then
+        if ufw allow "$port/$proto" >/dev/null; then
+          printf 'ufw|%s|%s\n' "$port" "$proto" >> "$state_file"
+          ufw_added=1
+        else
+          yellow "⚠️ UFW 放行 $port/$proto 失败，请手动检查防火墙"
+        fi
+      fi
+    done
+  fi
+  if command -v firewall-cmd >/dev/null 2>&1 && firewall-cmd --state >/dev/null 2>&1; then
+    for proto in tcp udp; do
+      if ! firewall-cmd --permanent --query-port="$port/$proto" >/dev/null 2>&1; then
+        if firewall-cmd --permanent --add-port="$port/$proto" >/dev/null; then
+          printf 'firewalld|%s|%s\n' "$port" "$proto" >> "$state_file"
+          firewalld_added=1
+        else
+          yellow "⚠️ firewalld 放行 $port/$proto 失败，请手动检查防火墙"
+        fi
+      fi
+    done
+    if [ "$firewalld_added" -eq 1 ]; then
+      firewall-cmd --reload >/dev/null
+    fi
+  fi
+
+  if [ -s "$state_file" ]; then
+    chmod 0600 "$state_file"
+  else
+    rm -f "$state_file"
+  fi
+  [ "$ufw_added" -eq 1 ] && green "✅ UFW 已放行 Snell 所需端口"
+  [ "$firewalld_added" -eq 1 ] && green "✅ firewalld 已放行 Snell 所需端口"
+  return 0
+}
+
+close_snell_firewall_ports() {
+  local firewall port proto
+  local state_file="/etc/snell/.managed-firewall"
+  local reload_firewalld=0
+
+  [ -f "$state_file" ] || return 0
+  while IFS='|' read -r firewall port proto; do
+    if ! is_valid_port "$port" || { [ "$proto" != "tcp" ] && [ "$proto" != "udp" ]; }; then
+      continue
+    fi
+    case "$firewall" in
+      ufw)
+        if command -v ufw >/dev/null 2>&1; then
+          ufw --force delete allow "$port/$proto" >/dev/null 2>&1 || true
+        fi
+        ;;
+      firewalld)
+        if command -v firewall-cmd >/dev/null 2>&1 && firewall-cmd --state >/dev/null 2>&1; then
+          firewall-cmd --permanent --remove-port="$port/$proto" >/dev/null 2>&1 || true
+          reload_firewalld=1
+        fi
+        ;;
+    esac
+  done < "$state_file"
+  if [ "$reload_firewalld" -eq 1 ]; then
+    firewall-cmd --reload >/dev/null 2>&1 || true
+  fi
+  rm -f "$state_file"
+}
+
+is_valid_port() {
+  [[ "$1" =~ ^[0-9]+$ ]] && [ "$1" -ge 1 ] && [ "$1" -le 65535 ]
+}
+
+install_snell_v5() {
+  local port remark psk ip surge_name surge_config yaml_name yaml_server yaml_psk yaml_config history_config
+
+  SNELL_ALPINE_LOW_PORT_SUPPORTED=1
+  sync_time_before_node_creation
+  check_and_install_snell_server || return 1
+
+  while true; do
+    prompt_read "Snell 监听端口（默认 6160，TCP/UDP 同端口）: " port
+    port=${port:-6160}
+    if is_valid_port "$port" && { [ "$OS" != "alpine" ] || [ "$port" -ge 1024 ] || [ "$SNELL_ALPINE_LOW_PORT_SUPPORTED" -eq 1 ]; }; then
+      break
+    fi
+    if is_valid_port "$port" && [ "$OS" = "alpine" ] && [ "$port" -lt 1024 ]; then
+      red "❌ 当前 Alpine 文件系统无法授予低端口权限，请选择 1024-65535"
+    else
+      red "❌ 端口必须是 1-65535 之间的整数"
+    fi
+  done
+  prompt_read "节点备注（默认 Snell-v5）: " remark
+  remark=${remark:-Snell-v5}
+  psk=$(openssl rand -hex 24)
+
+  ensure_snell_user
+  cat > /etc/snell/snell-server.conf <<EOF
+[snell-server]
+listen = 0.0.0.0:$port
+psk = $psk
+EOF
+  chown root:snell /etc/snell/snell-server.conf
+  chmod 0640 /etc/snell/snell-server.conf
+
+  write_snell_service
+  start_snell_service || return 1
+  open_snell_firewall_port "$port"
+
+  ip=$(get_public_ip)
+  if [ -z "$ip" ]; then
+    red "❌ 无法获取服务器公网 IPv4，请检查网络"
+    return 1
+  fi
+
+  surge_name=$(printf '%s' "$remark" | tr ',=' '__')
+  surge_config="$surge_name = snell, $ip, $port, psk=$psk, version=5, reuse=false"
+  yaml_name=$(jq -Rn --arg v "$remark" '$v')
+  yaml_server=$(jq -Rn --arg v "$ip" '$v')
+  yaml_psk=$(jq -Rn --arg v "$psk" '$v')
+  yaml_config=$(cat <<EOF
+- name: $yaml_name
+  type: snell
+  server: $yaml_server
+  port: $port
+  psk: $yaml_psk
+  version: 5
+  udp: true
+  reuse: false
+EOF
+)
+  history_config=$(cat <<EOF
+Surge:
+$surge_config
+
+YAML:
+$yaml_config
+EOF
+)
+  save_link_history "Snell v5" "$remark" "$history_config"
+
+  green "✅ Snell v5 节点部署完成"
+  green "协议参数: version=5, udp=true, reuse=false, TLS/obfs=关闭"
+  echo
+  yellow "Surge 配置（v5 UDP 自动启用）:"
+  echo "$surge_config"
+  echo
+  yellow "YAML 配置:"
+  echo "$yaml_config"
+  read -rp "按任意键返回菜单..."
+}
+
+uninstall_snell_v5() {
+  local remove_managed_user=0
+
+  [ -f /etc/snell/.managed-user ] && remove_managed_user=1
+  if [ "$OS" = "alpine" ]; then
+    rc-service snell stop >/dev/null 2>&1 || true
+    rc-update del snell default >/dev/null 2>&1 || true
+    rm -f /etc/init.d/snell
+  else
+    systemctl stop snell >/dev/null 2>&1 || true
+    systemctl disable snell >/dev/null 2>&1 || true
+    rm -f /etc/systemd/system/snell.service
+    systemctl daemon-reload >/dev/null 2>&1 || true
+  fi
+
+  close_snell_firewall_ports
+  rm -rf /etc/snell
+  rm -f /usr/local/bin/snell-server
+  if [ "$remove_managed_user" -eq 1 ]; then
+    if [ "$OS" = "alpine" ]; then
+      deluser snell >/dev/null 2>&1 || true
+      delgroup snell >/dev/null 2>&1 || true
+    else
+      userdel snell >/dev/null 2>&1 || true
+      groupdel snell >/dev/null 2>&1 || true
+    fi
+  fi
+  green "✅ Snell v5 已卸载"
+  read -rp "按任意键返回菜单..."
+}
+
 generate_vless_enc_pair() {
   local xray_bin="$1"
   local output section
@@ -827,7 +1268,7 @@ EOF
 #====== 主菜单 ======
 while true; do
   clear
-  green "======= VLESS Reality 一键脚本V6.2正式版 by L.H.X ======="
+  green "======= VLESS Reality 一键脚本V6.3正式版 by L.H.X ======="
   echo "1) 安装并配置 VLESS Reality Vision节点"  
   echo "2）生成Trojan Reality节点"
   echo "3) 生成 VLESS 中转链接"
@@ -840,6 +1281,8 @@ while true; do
   echo "10) 安装并配置 VLESS + enc + Vision flow 节点"
   echo "11) 卸载 SS2022"
   echo "12) 安装 Chrony 并同步系统时间"
+  echo "13) 安装并配置 Snell v5 节点"
+  echo "14) 卸载 Snell v5"
   echo "0) 退出"
   echo
   read -rp "请选择操作: " choice
@@ -1000,6 +1443,14 @@ EOF
         yellow "⚠️ 请检查网络、NTP 可达性，或容器是否具有调整系统时间的权限。"
       fi
       read -rp "按任意键返回菜单..."
+      ;;
+
+    13)
+      install_snell_v5
+      ;;
+
+    14)
+      uninstall_snell_v5
       ;;
 
     0)

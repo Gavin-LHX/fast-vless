@@ -1,8 +1,8 @@
 # fast-vless
 
-VLESS / Trojan Reality 一键安装脚本，适合在 VPS 或 LXC 环境中快速部署 Xray 节点。
+VLESS / Trojan Reality / SS2022 / Snell 一键安装脚本，适合在 VPS 或 LXC 环境中快速部署代理节点。
 
-当前脚本版本：`V6.2 正式版 by L.H.X`
+当前脚本版本：`V6.3 正式版 by L.H.X`
 
 ## 功能
 
@@ -13,6 +13,7 @@ VLESS / Trojan Reality 一键安装脚本，适合在 VPS 或 LXC 环境中快�
 - 一键生成 `VLESS + enc + Vision flow` 节点
 - 一键生成 `Trojan Reality` 节点
 - 一键安装 `SS2022` 节点（基于 shadowsocks-rust）
+- 一键安装官方 `Snell Server v5.0.1` 节点
 - 按服务器地区自动选择 Reality 伪装 CDN 域名
 - 使用 `xray tls ping` 探测证书链长度，避免超过 Reality 可用上限
 - 支持手动输入 Reality 域名 / SNI，并在使用前先探测可用性
@@ -25,6 +26,7 @@ VLESS / Trojan Reality 一键安装脚本，适合在 VPS 或 LXC 环境中快�
 - 运行 Ookla Speedtest 测速
 - 卸载 Xray
 - 卸载 SS2022
+- 卸载 Snell v5
 - 从主菜单手动执行 Chrony 时间同步
 
 ## 支持系统
@@ -34,6 +36,8 @@ VLESS / Trojan Reality 一键安装脚本，适合在 VPS 或 LXC 环境中快�
 - Alpine Linux
 
 SS2022 会按系统和架构自动选择 shadowsocks-rust 的 Linux gnu / musl 版本。Alpine 使用 musl 版本，其他系统默认使用 gnu 版本。
+
+Snell 使用 Surge 官方发布的 `v5.0.1` 内核，支持 `amd64`、`i386`、`aarch64` 和 `armv7l`。官方文件带有 UPX 自解包外壳，外层 ELF 虽会被 `file` 识别为静态链接，实际运行时仍会加载 glibc。Alpine 会自动补齐 OpenRC，并安装官方仓库中的 `gcompat`、`libstdc++`、`libgcc`、`libcap-utils` 和临时安装 `upx`，在服务器本机无损解包后运行原版内核，不需要源码、musl 重编译或额外二进制仓库。脚本会先校验官方压缩包的固定 SHA-256。
 
 Chrony 会按系统自动选择安装和服务管理方式：Debian / Ubuntu 使用 `apt` 与 `chrony.service`，CentOS / RHEL / Rocky Linux / AlmaLinux 使用 `dnf` 或 `yum` 与 `chronyd.service`，Alpine 使用 `apk` 安装 `chrony`（新版会补装 `chrony-openrc`）并启用 OpenRC 的 `chronyd` 服务。
 
@@ -70,6 +74,8 @@ bash <(curl -L https://raw.githubusercontent.com/Gavin-LHX/fast-vless/main/xrayv
 10) 安装并配置 VLESS + enc + Vision flow 节点
 11) 卸载 SS2022
 12) 安装 Chrony 并同步系统时间
+13) 安装并配置 Snell v5 节点
+14) 卸载 Snell v5
 0) 退出
 ```
 
@@ -81,6 +87,7 @@ bash <(curl -L https://raw.githubusercontent.com/Gavin-LHX/fast-vless/main/xrayv
 - `2) Trojan Reality`
 - `9) SS2022`
 - `10) VLESS + enc + Vision flow`
+- `13) Snell v5`
 
 脚本会保留发行版自带的 Chrony 配置和 NTP 源，启用服务开机自启，并使用 `chronyc` 触发快速采样和校时。也可以在主菜单选择：
 
@@ -178,9 +185,44 @@ xray vlessenc
 
 菜单 `11` 可卸载 SS2022，会停止服务、取消开机启动，并删除 shadowsocks-rust 二进制和 `/etc/shadowsocks` 配置目录。
 
+## Snell v5
+
+菜单 `13` 会从 Surge 官方地址下载并安装 `Snell Server v5.0.1`。脚本不会重新打包或托管 Snell 内核，也不会使用第三方兼容实现。
+
+Debian / Ubuntu / RHEL 系直接运行官方内核。Alpine 会安装 `gcompat`、`libstdc++`、`libgcc` 和 `libcap-utils`，并使用 Alpine 官方 `upx` 在本机去除官方文件的自解包外壳，再通过 musl 的 glibc 兼容层运行；安装结束后会删除临时 UPX 安装依赖。脚本会尝试授予专用 `snell` 用户绑定低端口的最小 capability；如果容器文件系统不支持，则提示改用 `1024-65535` 端口。
+
+默认配置：
+
+- 官方内核版本：`v5.0.1`
+- 默认端口：`6160`，安装时可以修改
+- PSK：自动执行 `openssl rand -hex 24` 生成
+- 协议版本：`version: 5`
+- UDP：`udp: true`，v5 自动支持 UDP 转发
+- 连接复用：`reuse: false`
+- TLS：关闭
+- obfs：关闭，服务端配置中不写入 `obfs` 或 `obfs-host`
+- 配置文件：`/etc/snell/snell-server.conf`
+
+Snell v5 的普通 UDP 会通过 UDP-over-TCP 转发；Surge 的 QUIC Proxy Mode 会使用服务器相同端口的 UDP，因此脚本会在已启用的 UFW 或 firewalld 中同时放行 TCP 和 UDP。
+
+服务路径：
+
+- systemd：`/etc/systemd/system/snell.service`
+- Alpine / OpenRC：`/etc/init.d/snell`
+- 官方内核：`/usr/local/bin/snell-server`
+
+脚本会输出两种客户端配置：
+
+- Surge 行格式：显式包含 `version=5, reuse=false`；UDP 在 v5 中自动启用，不需要额外参数
+- YAML 格式：显式包含 `version: 5`、`udp: true`、`reuse: false`
+
+Snell 没有统一的标准 URI，因此脚本保存的是客户端配置块，不会伪造 `snell://` 链接。官方说明和内核下载地址见 [Surge Snell Knowledge Base](https://kb.nssurge.com/surge-knowledge-base/release-notes/snell)。
+
+菜单 `14` 可停止并卸载 Snell v5，同时删除服务、配置、官方内核、由脚本创建的专用 `snell` 系统账户，以及脚本自行添加的 UFW/firewalld 端口规则。
+
 ## 历史链接
 
-每次成功生成 VLESS、Trojan 或 SS2022 节点后，脚本会自动把链接保存到：
+每次成功生成 VLESS、Trojan、SS2022 或 Snell 节点后，脚本会自动把链接或客户端配置保存到：
 
 ```bash
 /root/xray_link_history.txt
@@ -209,6 +251,7 @@ xray vlessenc
 - 开启 BBR 功能会重写 `/etc/sysctl.conf`，如服务器已有自定义内核参数，请先自行备份
 - 卸载 Xray 会删除 `/usr/local/etc/xray` 和 `/usr/local/bin/xray`
 - 卸载 SS2022 会删除 `/etc/shadowsocks`、`/usr/local/bin/ssserver` 和 `/usr/local/bin/sslocal`
+- 卸载 Snell 会删除 `/etc/snell`、`/usr/local/bin/snell-server` 和对应服务文件
 - 历史链接文件不会在卸载 Xray 时自动删除
 - Chrony 使用系统自带的默认 NTP 源，脚本不会覆盖已有 `/etc/chrony.conf` 或 `/etc/chrony/chrony.conf`
 - 自动候选采用保守域名池，不等同于从大陆网络做实时 GFW 可达性检测
@@ -227,4 +270,10 @@ xray vlessenc
 
 ```text
 11) 卸载 SS2022
+```
+
+如需卸载 Snell v5，在主菜单选择：
+
+```text
+14) 卸载 Snell v5
 ```
