@@ -1020,7 +1020,71 @@ close_snell_firewall_ports() {
 }
 
 is_valid_port() {
-  [[ "$1" =~ ^[0-9]+$ ]] && [ "$1" -ge 1 ] && [ "$1" -le 65535 ]
+  [[ "$1" =~ ^[0-9]{1,5}$ ]] && [ "$1" -ge 1 ] && [ "$1" -le 65535 ]
+}
+
+read_xray_port() {
+  while true; do
+    prompt_read "监听端口（默认 443）: " PORT || return 1
+    PORT=${PORT:-443}
+    if is_valid_port "$PORT"; then
+      PORT=$((10#$PORT))
+      return 0
+    fi
+    red "❌ 端口必须是 1-65535 之间的整数，请重新输入"
+  done
+}
+
+prepare_xray_config() {
+  mkdir -p /usr/local/etc/xray
+  XRAY_CONFIG_CANDIDATE=$(mktemp /usr/local/etc/xray/.candidate.XXXXXX.json)
+}
+
+restart_xray_checked() {
+  if [ "$OS" = "alpine" ]; then
+    rc-service xray restart || return 1
+    sleep 1
+    rc-service xray status >/dev/null 2>&1 || return 1
+    rc-update add xray default || return 1
+  else
+    systemctl daemon-reload || return 1
+    systemctl restart xray || return 1
+    sleep 1
+    systemctl is-active --quiet xray || return 1
+    systemctl enable xray || return 1
+  fi
+}
+
+activate_xray_config() {
+  local config=/usr/local/etc/xray/config.json backup=""
+
+  if ! "$XRAY_BIN" run -test -config "$XRAY_CONFIG_CANDIDATE"; then
+    rm -f "$XRAY_CONFIG_CANDIDATE"
+    red "❌ Xray 配置验证失败，原配置和服务保持不变"
+    return 1
+  fi
+  if [ -f "$config" ]; then
+    backup=$(mktemp /usr/local/etc/xray/.backup.XXXXXX.json) || return 1
+    if ! cp -p "$config" "$backup"; then
+      rm -f "$backup" "$XRAY_CONFIG_CANDIDATE"
+      return 1
+    fi
+  fi
+  # The official systemd unit runs as nobody and must be able to read the config.
+  chmod 0644 "$XRAY_CONFIG_CANDIDATE" || return 1
+  mv -f "$XRAY_CONFIG_CANDIDATE" "$config" || return 1
+  if ! restart_xray_checked; then
+    if [ -n "$backup" ]; then
+      mv -f "$backup" "$config" || return 1
+      restart_xray_checked || true
+    else
+      rm -f "$config"
+    fi
+    red "❌ Xray 启动失败，已撤回新配置；请检查服务日志和端口占用"
+    return 1
+  fi
+  [ -z "$backup" ] || rm -f "$backup"
+  return 0
 }
 
 install_snell_v5() {
@@ -1157,7 +1221,7 @@ install_trojan_reality() {
   sync_time_before_node_creation
   check_and_install_xray
   XRAY_BIN=$(command -v xray || echo "/usr/local/bin/xray")
-  read -rp "监听端口（如 443）: " PORT
+  read_xray_port
   read -rp "节点备注（如：trojanNode）: " REMARK
   choose_reality_domain "$XRAY_BIN"
 
@@ -1173,14 +1237,15 @@ install_trojan_reality() {
   SHORT_ID=$(head -c 4 /dev/urandom | xxd -p)
 
   mkdir -p /usr/local/etc/xray
-  cat > /usr/local/etc/xray/config.json <<EOF
+  prepare_xray_config
+  cat > "$XRAY_CONFIG_CANDIDATE" <<EOF
 {
   "log": { "loglevel": "warning" },
   "inbounds": [{
     "port": $PORT,
     "protocol": "trojan",
     "settings": {
-      "clients": [{ "password": "$PASSWORD", "email": "$REMARK"}]
+      "clients": [{ "password": "$PASSWORD", "email": $(jq -Rn --arg v "$REMARK" '$v')}]
     },
     "streamSettings": {
       "network": "tcp",
@@ -1199,16 +1264,9 @@ install_trojan_reality() {
 }
 EOF
 
-  if [ "$OS" = "alpine" ]; then
-      rc-service xray restart
-      rc-update add xray default
-  else
-      systemctl daemon-reexec
-      systemctl restart xray
-      systemctl enable xray
-  fi
+  activate_xray_config || return 1
   IP=$(curl -s ipv4.ip.sb || curl -s ifconfig.me)
-  LINK="trojan://$PASSWORD@$IP:$PORT?security=reality&sni=$SNI&pbk=$PUB_KEY&sid=$SHORT_ID&type=tcp&headerType=none#$REMARK"
+  LINK="trojan://$PASSWORD@$IP:$PORT?security=reality&sni=$SNI&pbk=$PUB_KEY&sid=$SHORT_ID&type=tcp&headerType=none#$(url_encode "$REMARK")"
   save_link_history "Trojan Reality" "$REMARK" "$LINK"
   green "✅ Trojan Reality 节点链接如下："
   echo "$LINK"
@@ -1219,21 +1277,22 @@ install_vless_enc_vision_flow() {
   sync_time_before_node_creation
   check_and_install_xray
   XRAY_BIN=$(command -v xray || echo "/usr/local/bin/xray")
-  read -rp "监听端口（如 443）: " PORT
+  read_xray_port
   read -rp "节点备注: " REMARK
   generate_vless_enc_pair "$XRAY_BIN"
 
   UUID=$(cat /proc/sys/kernel/random/uuid)
 
   mkdir -p /usr/local/etc/xray
-  cat > /usr/local/etc/xray/config.json <<EOF
+  prepare_xray_config
+  cat > "$XRAY_CONFIG_CANDIDATE" <<EOF
 {
   "log": { "loglevel": "warning" },
   "inbounds": [{
     "port": $PORT,
     "protocol": "vless",
     "settings": {
-      "clients": [{ "id": "$UUID", "email": "$REMARK" , "flow": "xtls-rprx-vision"}],
+      "clients": [{ "id": "$UUID", "email": $(jq -Rn --arg v "$REMARK" '$v') , "flow": "xtls-rprx-vision"}],
       "decryption": "$VLESS_DECRYPTION"
     },
     "streamSettings": {
@@ -1245,15 +1304,7 @@ install_vless_enc_vision_flow() {
 }
 EOF
 
-  "$XRAY_BIN" run -test -config /usr/local/etc/xray/config.json >/dev/null
-  if [ "$OS" = "alpine" ]; then
-      rc-service xray restart
-      rc-update add xray default
-  else
-      systemctl daemon-reexec
-      systemctl restart xray
-      systemctl enable xray
-  fi
+  activate_xray_config || return 1
 
   IP=$(get_public_ip)
   ENCRYPTION_PARAM=$(url_encode "$VLESS_ENCRYPTION")
@@ -1292,7 +1343,7 @@ while true; do
       sync_time_before_node_creation
       check_and_install_xray
       XRAY_BIN=$(command -v xray || echo "/usr/local/bin/xray")
-      read -rp "监听端口（如 443）: " PORT
+      read_xray_port
       read -rp "节点备注: " REMARK
       choose_reality_domain "$XRAY_BIN"
       UUID=$(cat /proc/sys/kernel/random/uuid)
@@ -1307,14 +1358,15 @@ while true; do
       SHORT_ID=$(head -c 4 /dev/urandom | xxd -p)
 
       mkdir -p /usr/local/etc/xray
-      cat > /usr/local/etc/xray/config.json <<EOF
+      prepare_xray_config
+      cat > "$XRAY_CONFIG_CANDIDATE" <<EOF
 {
   "log": { "loglevel": "warning" },
   "inbounds": [{
     "port": $PORT,
     "protocol": "vless",
     "settings": {
-      "clients": [{ "id": "$UUID", "email": "$REMARK" , "flow": "xtls-rprx-vision"}],
+      "clients": [{ "id": "$UUID", "email": $(jq -Rn --arg v "$REMARK" '$v') , "flow": "xtls-rprx-vision"}],
       "decryption": "none"
     },
     "streamSettings": {
@@ -1334,16 +1386,9 @@ while true; do
 }
 EOF
 
-	  if [ "$OS" = "alpine" ]; then
-	      rc-service xray restart
-	      rc-update add xray default
-	  else
-	      systemctl daemon-reexec
-          systemctl restart xray
-          systemctl enable xray
-	  fi
+      activate_xray_config || continue
       IP=$(curl -s ipv4.ip.sb || curl -s ifconfig.me)
-      LINK="vless://$UUID@$IP:$PORT?type=tcp&security=reality&flow=xtls-rprx-vision&sni=$SNI&fp=chrome&pbk=$PUB_KEY&sid=$SHORT_ID#$REMARK"
+      LINK="vless://$UUID@$IP:$PORT?type=tcp&encryption=none&security=reality&flow=xtls-rprx-vision&sni=$SNI&fp=chrome&pbk=$PUB_KEY&sid=$SHORT_ID#$(url_encode "$REMARK")"
       save_link_history "VLESS Reality Vision" "$REMARK" "$LINK"
       green "✅ 节点链接如下："
       echo "$LINK"

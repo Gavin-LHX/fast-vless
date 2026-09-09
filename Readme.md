@@ -99,6 +99,10 @@ bash <(curl -L https://raw.githubusercontent.com/Gavin-LHX/fast-vless/main/xrayv
 
 部分未授权调整系统时间的 LXC 容器会由宿主机统一维护时钟。遇到这种情况时，脚本会给出警告并继续创建节点，不会因为 Chrony 权限不足中断部署。
 
+## 节点端口与配置校验
+
+VLESS Reality、Trojan Reality 和 VLESS + enc 的监听端口回车默认为 443，仅接受 1-65535 的整数。配置先通过 Xray 自带的配置检查，再替换旧配置并重启服务；验证失败会保留旧配置，启动失败会撤回新配置。只有服务启动成功才输出并保存节点链接。
+
 ## Reality 域名选择
 
 安装 VLESS 或 Trojan 节点时，脚本会提示：
