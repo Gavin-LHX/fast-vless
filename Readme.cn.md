@@ -32,14 +32,17 @@ VLESS / Trojan Reality / SS2022 / Snell 一键安装脚本，适合在 VPS 或 L
 ## 支持系统
 
 - Debian / Ubuntu
-- CentOS / RHEL / Rocky Linux / AlmaLinux
+- Oracle Linux Server 9.x（包括 9.8）
+- Red Hat Enterprise Linux（RHEL）/ CentOS / Rocky Linux / AlmaLinux
 - Alpine Linux
+
+Oracle Linux 和 RHEL 系统会使用 dnf（旧系统回退到 yum）安装依赖，复用已经安装的 curl/curl-minimal，通过 systemd 管理服务。基础依赖使用系统自带的 BaseOS/AppStream 软件源，不自动添加 EPEL；RHEL 需要先配置可用的订阅软件源或镜像源。
 
 SS2022 会按系统和架构自动选择 shadowsocks-rust 的 Linux gnu / musl 版本。Alpine 使用 musl 版本，其他系统默认使用 gnu 版本。
 
 Snell 使用 Surge 官方发布的 `v5.0.1` 内核，支持 `amd64`、`i386`、`aarch64` 和 `armv7l`。官方文件带有 UPX 自解包外壳，外层 ELF 虽会被 `file` 识别为静态链接，实际运行时仍会加载 glibc。Alpine 会自动补齐 OpenRC，并安装官方仓库中的 `gcompat`、`libstdc++`、`libgcc`、`libcap-utils` 和临时安装 `upx`，在服务器本机无损解包后运行原版内核，不需要源码、musl 重编译或额外二进制仓库。脚本会先校验官方压缩包的固定 SHA-256。
 
-Chrony 会按系统自动选择安装和服务管理方式：Debian / Ubuntu 使用 `apt` 与 `chrony.service`，CentOS / RHEL / Rocky Linux / AlmaLinux 使用 `dnf` 或 `yum` 与 `chronyd.service`，Alpine 使用 `apk` 安装 `chrony`（新版会补装 `chrony-openrc`）并启用 OpenRC 的 `chronyd` 服务。
+Chrony 会按系统自动选择安装和服务管理方式：Debian / Ubuntu 使用 `apt` 与 `chrony.service`，Oracle Linux / RHEL / CentOS / Rocky Linux / AlmaLinux 使用 `dnf` 或 `yum` 与 `chronyd.service`，Alpine 使用 `apk` 安装 `chrony`（新版会补装 `chrony-openrc`）并启用 OpenRC 的 `chronyd` 服务。
 
 请使用 `root` 权限运行脚本。如果当前用户不是 root，可以先执行：
 

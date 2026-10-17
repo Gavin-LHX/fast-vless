@@ -49,29 +49,78 @@ get_public_ip() {
 
 #====== 安装依赖 ======
 detect_os() {
-  if [ -f /etc/os-release ]; then
-    . /etc/os-release
-    OS=$ID
-  else
-    OS=$(uname -s)
+  local release_file="${1:-/etc/os-release}"
+  local ID="" ID_LIKE="" family
+
+  if [ ! -f "$release_file" ]; then
+    uname -s
+    return
   fi
-  echo "$OS"
+  # shellcheck source=/dev/null
+  . "$release_file"
+  case "$ID" in
+    ubuntu|debian|alpine|centos|rhel|rocky|almalinux|ol)
+      printf '%s\n' "$ID"
+      return
+      ;;
+    redhat|redhatenterpriseserver|redhatenterprise)
+      printf 'rhel\n'
+      return
+      ;;
+    oracle|oraclelinux)
+      printf 'ol\n'
+      return
+      ;;
+    alma)
+      printf 'almalinux\n'
+      return
+      ;;
+  esac
+  for family in $ID_LIKE; do
+    case "$family" in
+      rhel|centos)
+        printf 'rhel\n'
+        return
+        ;;
+      debian|ubuntu)
+        printf 'debian\n'
+        return
+        ;;
+    esac
+  done
+  printf '%s\n' "${ID:-unknown}"
 }
-OS=$(detect_os)
+OS=$(detect_os /etc/os-release)
 install_dependencies() {
+  local package_manager
+  local -a rpm_packages=(ca-certificates wget unzip xz jq vim-common openssl tar)
+
   green "检测到系统: $OS，安装依赖..."
   case "$OS" in
     ubuntu|debian)
       apt-get update
       DEBIAN_FRONTEND=noninteractive apt-get install -y curl wget unzip xz-utils jq xxd openssl tar >/dev/null 2>&1
       ;;
-    centos|rhel|rocky|alma)
+    centos|rhel|rocky|almalinux|ol)
       if command -v dnf >/dev/null 2>&1; then
-        dnf install -y epel-release >/dev/null 2>&1 || true
-        dnf install -y curl wget unzip xz jq vim-common openssl tar >/dev/null 2>&1
+        package_manager="dnf"
+      elif command -v yum >/dev/null 2>&1; then
+        package_manager="yum"
       else
-        yum install -y epel-release >/dev/null 2>&1 || true
-        yum install -y curl wget unzip xz jq vim-common openssl tar >/dev/null 2>&1
+        red "❌ 未找到 dnf 或 yum，无法安装依赖"
+        return 1
+      fi
+      # Older CentOS releases provide jq through EPEL.
+      if [ "$OS" = "centos" ]; then
+        "$package_manager" install -y epel-release >/dev/null 2>&1 || true
+      fi
+      # EL9 minimal images may already provide curl through curl-minimal.
+      if ! command -v curl >/dev/null 2>&1; then
+        rpm_packages+=(curl)
+      fi
+      if ! "$package_manager" install -y "${rpm_packages[@]}"; then
+        red "❌ 依赖安装失败，请检查 BaseOS/AppStream 软件源；RHEL 还需有效的软件源授权"
+        return 1
       fi
       ;;
     alpine)
@@ -113,11 +162,14 @@ install_chrony_package() {
         return 1
       fi
       ;;
-    centos|rhel|rocky|alma)
+    centos|rhel|rocky|almalinux|ol)
       if command -v dnf >/dev/null 2>&1; then
         package_manager="dnf"
-      else
+      elif command -v yum >/dev/null 2>&1; then
         package_manager="yum"
+      else
+        red "❌ 未找到 dnf 或 yum，无法安装 Chrony"
+        return 1
       fi
       if ! "$package_manager" install -y chrony >/dev/null 2>&1; then
         red "❌ Chrony 安装失败"
