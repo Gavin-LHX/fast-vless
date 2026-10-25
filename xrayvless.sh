@@ -292,6 +292,10 @@ sync_time_before_node_creation() {
 #====== 检测xray是否安装 =====
 check_and_install_xray() {
   if command -v xray >/dev/null 2>&1; then
+    if ! xray version >/dev/null 2>&1; then
+      red "❌ 已安装的 Xray 无法运行（可能是架构不匹配），请重新安装匹配 $(uname -m) 的内核"
+      return 1
+    fi
     green "✅ Xray 已安装，跳过安装"
   else
     green "❗检测到 Xray 未安装，正在安装..."
@@ -302,7 +306,7 @@ check_and_install_xray() {
 	fi
     
     XRAY_BIN=$(command -v xray || echo "/usr/local/bin/xray")
-    if [ ! -x "$XRAY_BIN" ]; then
+    if [ ! -x "$XRAY_BIN" ] || ! "$XRAY_BIN" version >/dev/null 2>&1; then
       red "❌ Xray 安装失败，请检查"
       exit 1
     fi
@@ -443,7 +447,10 @@ probe_reality_domain() {
   fi
 
   yellow "探测 Reality 域名: $domain"
-  output=$("$xray_bin" tls ping "$domain" 2>&1 || true)
+  if ! output=$("$xray_bin" tls ping "$domain" 2>&1); then
+    yellow "跳过 $domain，Xray 探测命令执行失败: $output"
+    return 1
+  fi
   sni_ok=$(printf '%s\n' "$output" | awk 'BEGIN { in_sni=0 } /Pinging with SNI/ { in_sni=1 } in_sni && /Handshake succeeded/ { print "1"; exit }')
   max_len=$(printf '%s\n' "$output" | awk '
     BEGIN { in_sni=0; max=0 }
@@ -1088,8 +1095,12 @@ read_xray_port() {
 }
 
 prepare_xray_config() {
+  local candidate
   mkdir -p /usr/local/etc/xray
-  XRAY_CONFIG_CANDIDATE=$(mktemp /usr/local/etc/xray/.candidate.XXXXXX.json)
+  # BusyBox mktemp requires the XXXXXX placeholder at the end of the template.
+  candidate=$(mktemp /usr/local/etc/xray/.candidate.XXXXXX) || return 1
+  XRAY_CONFIG_CANDIDATE="$candidate.json"
+  mv "$candidate" "$XRAY_CONFIG_CANDIDATE"
 }
 
 restart_xray_checked() {
@@ -1116,7 +1127,7 @@ activate_xray_config() {
     return 1
   fi
   if [ -f "$config" ]; then
-    backup=$(mktemp /usr/local/etc/xray/.backup.XXXXXX.json) || return 1
+    backup=$(mktemp /usr/local/etc/xray/.backup.XXXXXX) || return 1
     if ! cp -p "$config" "$backup"; then
       rm -f "$backup" "$XRAY_CONFIG_CANDIDATE"
       return 1

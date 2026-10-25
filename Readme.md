@@ -36,6 +36,8 @@ VLESS / Trojan Reality / SS2022 / Snell 一键安装脚本，适合在 VPS 或 L
 - Red Hat Enterprise Linux（RHEL）/ CentOS / Rocky Linux / AlmaLinux
 - Alpine Linux
 
+Alpine 安装 Xray 时会按实际 CPU 架构选择官方内核（包括 ARM64/aarch64），下载后先执行 `xray version` 验证，再替换安装。首次安装尚无节点配置时只安装内核、注册 OpenRC 服务，配置通过校验后才启动；已有内核无法运行时会直接报错，避免误报所有 Reality 域名握手失败。节点配置和回滚备份的临时文件名兼容 Alpine 的 BusyBox mktemp。
+
 Oracle Linux 和 RHEL 系统会使用 dnf（旧系统回退到 yum）安装依赖，复用已经安装的 curl/curl-minimal，通过 systemd 管理服务。基础依赖使用系统自带的 BaseOS/AppStream 软件源，不自动添加 EPEL；RHEL 需要先配置可用的订阅软件源或镜像源。
 
 SS2022 会按系统和架构自动选择 shadowsocks-rust 的 Linux gnu / musl 版本。Alpine 使用 musl 版本，其他系统默认使用 gnu 版本。
