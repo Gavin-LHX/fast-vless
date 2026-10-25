@@ -11,6 +11,7 @@ if [ "$(id -u)" -ne 0 ]; then
 fi
 
 LINK_HISTORY_FILE="/root/xray_link_history.txt"
+REALITY_CLIENT_CONFIG_FILE="/root/xray_reality_client.yaml"
 REALITY_CERT_MAX=8192
 REALITY_LAST_RESORT_DOMAIN="www.microsoft.com"
 SS_RUST_FALLBACK_VERSION="v1.24.0"
@@ -335,6 +336,29 @@ save_link_history() {
     echo "$link"
     echo
   } >> "$LINK_HISTORY_FILE"
+}
+
+save_vless_reality_client_config() {
+  local output_file="$1" candidate
+
+  candidate=$(mktemp "${output_file}.XXXXXX") || return 1
+  # JSON is also valid YAML; jq preserves quoting and scalar types for importers.
+  if ! jq -n --arg name "$REMARK" --arg server "$IP" --argjson port "$PORT" \
+    --arg uuid "$UUID" --arg sni "$SNI" --arg public_key "$PUB_KEY" --arg short_id "$SHORT_ID" '
+    {proxies: [{
+      name: $name, type: "vless", server: $server, port: $port, uuid: $uuid,
+      network: "tcp", tls: true, flow: "xtls-rprx-vision", servername: $sni,
+      "client-fingerprint": "chrome",
+      "reality-opts": {
+        "public-key": $public_key, "short-id": $short_id,
+        "support-x25519mlkem768": true
+      }
+    }]}' > "$candidate"; then
+    rm -f "$candidate"
+    return 1
+  fi
+  chmod 0600 "$candidate" || { rm -f "$candidate"; return 1; }
+  mv -f "$candidate" "$output_file"
 }
 
 show_link_history() {
@@ -1455,6 +1479,13 @@ EOF
       save_link_history "VLESS Reality Vision" "$REMARK" "$LINK"
       green "✅ 节点链接如下："
       echo "$LINK"
+      if save_vless_reality_client_config "$REALITY_CLIENT_CONFIG_FILE"; then
+        green "✅ Mihomo / Koipy 客户端配置已保存: $REALITY_CLIENT_CONFIG_FILE"
+        yellow "Mihomo / Koipy 请导入此 YAML；普通 VLESS 链接无法携带 support-x25519mlkem768。"
+        yellow "NAT 服务器请将链接地址及 YAML 的 server 改为服务商分配的公网入口地址。"
+      else
+        yellow "⚠️ 客户端 YAML 保存失败；Mihomo 需在 reality-opts 下设置 support-x25519mlkem768: true"
+      fi
       read -rp "按任意键返回菜单..."
       ;;
     2)

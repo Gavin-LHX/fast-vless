@@ -108,6 +108,24 @@ bash <(curl -L https://raw.githubusercontent.com/Gavin-LHX/fast-vless/main/xrayv
 
 VLESS Reality、Trojan Reality 和 VLESS + enc 的监听端口回车默认为 443，仅接受 1-65535 的整数。配置先通过 Xray 自带的配置检查，再替换旧配置并重启服务；验证失败会保留旧配置，启动失败会撤回新配置。只有服务启动成功才输出并保存节点链接。
 
+## Mihomo / Koipy 客户端兼容性
+
+较新的 Xray REALITY 服务端要求客户端握手携带 X25519MLKEM768。部分 Mihomo 版本默认关闭此能力，会出现 `REALITY authentication failed`，表现为 Koipy 延迟和速度均为 0，而使用 Xray 内核的客户端正常。
+
+创建 VLESS Reality Vision 节点时，脚本会同时导出 `/root/xray_reality_client.yaml`（权限 `0600`）。Mihomo / Koipy 请导入此 YAML，其中已设置：
+
+```yaml
+client-fingerprint: chrome
+reality-opts:
+  public-key: "节点公钥"
+  short-id: "节点 ShortId"
+  support-x25519mlkem768: true
+```
+
+普通 `vless://` 分享链接无法携带这一 Mihomo 专用开关，单纯重新导入链接不能解决此问题。使用 Xray 内核的 v2rayN 可继续导入原链接。NAT 服务器的公网入口可能与出口 IP 不同，需要将链接地址和 YAML 中的 `server` 改为服务商提供的公网入口，并核对映射端口。
+
+参考：[Mihomo TLS 配置](https://wiki.metacubex.one/config/proxies/tls/#reality-optssupport-x25519mlkem768)、[上游兼容性说明](https://github.com/MetaCubeX/mihomo/issues/3193)。
+
 ## Reality 域名选择
 
 安装 VLESS 或 Trojan 节点时，脚本会提示：
