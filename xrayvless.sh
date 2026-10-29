@@ -829,7 +829,7 @@ get_snell_sha256() {
 }
 
 check_and_install_snell_server() {
-  local arch url tmp_dir version_output expected_sha actual_sha
+  local arch url tmp_dir version_output expected_sha actual_sha installed_version
 
   if [ "$OS" = "alpine" ]; then
     green "正在检查 Snell 的 Alpine glibc 兼容运行库..."
@@ -841,7 +841,9 @@ check_and_install_snell_server() {
 
   if [ -x /usr/local/bin/snell-server ]; then
     version_output=$(/usr/local/bin/snell-server -v 2>&1 || true)
-    if printf '%s\n' "$version_output" | grep -q "snell-server $SNELL_VERSION"; then
+    installed_version=$(printf '%s\n' "$version_output" | sed -nE 's/.*snell-server (v[0-9]+\.[0-9]+\.[0-9]+).*/\1/p' | head -n 1)
+    if [[ "$installed_version" =~ ^v5\.[0-9]+\.[0-9]+$ ]] && \
+      ! update_version_needed "$installed_version" "$SNELL_VERSION"; then
       if [ "$OS" = "alpine" ]; then
         if setcap cap_net_bind_service=+ep /usr/local/bin/snell-server 2>/dev/null && \
           getcap /usr/local/bin/snell-server 2>/dev/null | grep -q 'cap_net_bind_service'; then
@@ -850,7 +852,7 @@ check_and_install_snell_server() {
           SNELL_ALPINE_LOW_PORT_SUPPORTED=0
         fi
       fi
-      green "✅ 官方 Snell Server $SNELL_VERSION 已安装，跳过下载"
+      green "✅ 官方 Snell Server $installed_version 已安装，跳过下载"
       return 0
     fi
   fi
@@ -1403,10 +1405,351 @@ EOF
   read -rp "按任意键返回菜单..."
 }
 
+update_service_active() {
+  if [ "$OS" = alpine ]; then
+    rc-service "$1" status >/dev/null 2>&1
+  else
+    systemctl is-active --quiet "$1"
+  fi
+}
+
+update_service_action() {
+  if [ "$OS" = alpine ]; then
+    rc-service "$1" "$2"
+  else
+    systemctl "$2" "$1"
+  fi
+}
+
+backup_program_config() {
+  local name="$1" path destination
+  shift
+  destination="$UPDATE_BACKUP_DIR/$name"
+  mkdir -p "$destination" || return 1
+  chmod 0700 "$destination" || return 1
+  for path in "$@"; do
+    if [ -e "$path" ]; then
+      cp -a "$path" "$destination/" || return 1
+    fi
+  done
+}
+
+get_update_release() {
+  local repository="$1" output="$2" release_url
+  if curl -fsSL --retry 2 --connect-timeout 10 --max-time 30 \
+    "https://api.github.com/repos/$repository/releases/latest" -o "$output"; then
+    UPDATE_VERSION=$(jq -er 'select(.draft == false and .prerelease == false) |
+      .tag_name | select(type == "string" and test("^v[0-9]+(\\.[0-9]+){1,3}$"))' "$output") || return 1
+  else
+    yellow "GitHub API 暂不可用，改用官方 latest 页面获取稳定版本"
+    release_url=$(curl -fsSL --retry 2 --connect-timeout 10 --max-time 30 \
+      -o /dev/null -w '%{url_effective}' "https://github.com/$repository/releases/latest") || return 1
+    UPDATE_VERSION=${release_url##*/}
+    [[ "$UPDATE_VERSION" =~ ^v[0-9]+(\.[0-9]+){1,3}$ ]] || return 1
+    [ "$release_url" = "https://github.com/$repository/releases/tag/$UPDATE_VERSION" ] || return 1
+    jq -n --arg tag "$UPDATE_VERSION" '{tag_name:$tag,assets:[],fallback:true}' > "$output" || return 1
+  fi
+}
+
+update_version_needed() {
+  local current="${1#v}" latest="${2#v}"
+  if [[ ! "$current" =~ ^[0-9]+(\.[0-9]+){1,3}$ ]]; then
+    return 0
+  fi
+  [ "$current" != "$latest" ] && [ "$(printf '%s\n' "$current" "$latest" | sort -V | tail -n 1)" = "$latest" ]
+}
+
+download_update_asset() {
+  local repository="$1" release="$2" asset="$3" output="$4"
+  local url digest actual
+  url=$(jq -r --arg name "$asset" '.assets[] | select(.name == $name) | .browser_download_url' "$release") || return 1
+  if [ -z "$url" ] && [ "$(jq -r '.fallback // false' "$release")" = true ]; then
+    url="https://github.com/$repository/releases/download/$UPDATE_VERSION/$asset"
+  fi
+  if [ "$url" != "https://github.com/$repository/releases/download/$UPDATE_VERSION/$asset" ]; then
+    red "❌ 更新文件下载地址不符合官方发布路径"
+    return 1
+  fi
+  curl -fL --retry 2 --connect-timeout 10 --max-time 180 -o "$output" "$url" || return 1
+  digest=$(jq -r --arg name "$asset" '.assets[] | select(.name == $name) | .digest // empty' "$release") || return 1
+  if [[ "$digest" == sha256:* ]]; then
+    digest=${digest#sha256:}
+  elif [ "$repository" = XTLS/Xray-core ]; then
+    curl -fsSL --retry 2 --connect-timeout 10 --max-time 30 "$url.dgst" -o "$output.dgst" || return 1
+    digest=$(awk -F '= ' '/256=/ {gsub(/\r/, "", $2); print $2; exit}' "$output.dgst")
+  else
+    curl -fsSL --retry 2 --connect-timeout 10 --max-time 30 "$url.sha256" -o "$output.sha256" || return 1
+    digest=$(awk 'NR==1 {print $1}' "$output.sha256")
+  fi
+  [[ "$digest" =~ ^[a-fA-F0-9]{64}$ ]] || return 1
+  actual=$(sha256sum "$output" | awk '{print $1}') || return 1
+  if [ "${actual,,}" != "${digest,,}" ]; then
+    red "❌ 更新文件 SHA-256 校验失败"
+    return 1
+  fi
+}
+
+get_xray_update_arch() {
+  case "$(uname -m)" in
+    x86_64|amd64) echo 64 ;;
+    i386|i486|i586|i686|x86) echo 32 ;;
+    aarch64|arm64|armv8) echo arm64-v8a ;;
+    armv5tel) echo arm32-v5 ;;
+    armv6l) echo arm32-v6 ;;
+    armv7|armv7l) echo arm32-v7a ;;
+    mips) echo mips32 ;;
+    mipsle|mipsel) echo mips32le ;;
+    mips64le|mips64el) echo mips64le ;;
+    mips64|ppc64|ppc64le|riscv64|s390x) uname -m ;;
+    loongarch64) echo loong64 ;;
+    *) return 1 ;;
+  esac
+}
+
+restore_core_binaries() {
+  local backup="$1" binary
+  shift
+  for binary in "$@"; do
+    mv -f "$backup/$binary" "/usr/local/bin/$binary" || return 1
+  done
+}
+
+apply_core_update() (
+  local service="$1" staged="$2" backup binary temporary active=0 failed=0
+  local old_capability=""
+  shift 2
+  backup=$(mktemp -d) || return 1
+  trap 'rm -rf "$backup"' EXIT
+  for binary in "$@"; do
+    cp -p "/usr/local/bin/$binary" "$backup/$binary" || return 1
+  done
+  if [ "$service" = snell ] && [ "$OS" = alpine ]; then
+    old_capability=$(getcap /usr/local/bin/snell-server 2>/dev/null | awk '{print $2}' || true)
+  fi
+  if update_service_active "$service"; then
+    active=1
+    update_service_action "$service" stop || return 1
+  fi
+  for binary in "$@"; do
+    temporary=$(mktemp "/usr/local/bin/$binary.update.XXXXXX") || { failed=1; break; }
+    if ! install -m 0755 "$staged/$binary" "$temporary" || \
+      ! mv -f "$temporary" "/usr/local/bin/$binary"; then
+      rm -f "$temporary"
+      failed=1
+      break
+    fi
+  done
+  if [ "$failed" -eq 0 ] && [ -n "$old_capability" ]; then
+    setcap "$old_capability" /usr/local/bin/snell-server || failed=1
+  fi
+  if [ "$failed" -eq 0 ] && [ "$active" -eq 1 ]; then
+    if ! update_service_action "$service" start; then
+      failed=1
+    else
+      sleep 2
+      update_service_active "$service" || failed=1
+    fi
+  fi
+  if [ "$failed" -eq 1 ]; then
+    if [ "$active" -eq 1 ]; then
+      update_service_action "$service" stop >/dev/null 2>&1 || true
+    fi
+    restore_core_binaries "$backup" "$@" || {
+      trap - EXIT
+      red "❌ 旧核心恢复失败，保留备份于 $backup，请检查磁盘权限"
+      return 1
+    }
+    if [ -n "$old_capability" ]; then
+      setcap "$old_capability" /usr/local/bin/snell-server || return 1
+    fi
+    if [ "$active" -eq 1 ]; then
+      if ! update_service_action "$service" start || ! update_service_active "$service"; then
+        red "❌ 已恢复旧核心，但服务未能恢复，请检查日志"
+        return 1
+      fi
+    fi
+    red "❌ $service 更新未成功，已恢复旧核心"
+    return 1
+  fi
+)
+
+update_xray_core() (
+  local work arch current asset
+  if [ ! -x /usr/local/bin/xray ]; then
+    yellow "跳过 Xray：尚未安装"
+    return 2
+  fi
+  work=$(mktemp -d) || return 1
+  trap 'rm -rf "$work"' EXIT
+  arch=$(get_xray_update_arch) || return 1
+  current=$(/usr/local/bin/xray version | awk 'NR==1 {print $2}') || return 1
+  get_update_release XTLS/Xray-core "$work/release.json" || return 1
+  if ! update_version_needed "$current" "$UPDATE_VERSION"; then
+    green "Xray $current 无需更新（官方稳定版 $UPDATE_VERSION）"
+    return 0
+  fi
+  green "正在更新 Xray: $current → $UPDATE_VERSION"
+  asset="Xray-linux-$arch.zip"
+  download_update_asset XTLS/Xray-core "$work/release.json" "$asset" "$work/archive.zip" || return 1
+  unzip -q "$work/archive.zip" -d "$work/staged" || return 1
+  chmod +x "$work/staged/xray" || return 1
+  [ "$("$work/staged/xray" version | awk 'NR==1 {print $2}')" = "${UPDATE_VERSION#v}" ] || return 1
+  if [ -f /usr/local/etc/xray/config.json ]; then
+    XRAY_LOCATION_ASSET=/usr/local/share/xray "$work/staged/xray" run -test -config /usr/local/etc/xray/config.json || return 1
+  fi
+  backup_program_config xray /usr/local/etc/xray || return 1
+  apply_core_update xray "$work/staged" xray || return 1
+  green "✅ Xray 已更新为 $UPDATE_VERSION"
+)
+
+update_shadowsocks_rust() (
+  local work flavor=gnu target current asset binary
+  if [ ! -x /usr/local/bin/ssserver ]; then
+    yellow "跳过 shadowsocks-rust：尚未安装"
+    return 2
+  fi
+  work=$(mktemp -d) || return 1
+  trap 'rm -rf "$work"' EXIT
+  [ "$OS" != alpine ] || flavor=musl
+  target=$(get_shadowsocks_rust_target "$flavor") || return 1
+  current=$(/usr/local/bin/ssserver --version | awk 'NR==1 {print $NF}') || return 1
+  get_update_release shadowsocks/shadowsocks-rust "$work/release.json" || return 1
+  if ! update_version_needed "$current" "$UPDATE_VERSION"; then
+    green "shadowsocks-rust $current 无需更新（官方稳定版 $UPDATE_VERSION）"
+    return 0
+  fi
+  green "正在更新 shadowsocks-rust: $current → $UPDATE_VERSION ($target)"
+  asset="shadowsocks-$UPDATE_VERSION.$target.tar.xz"
+  download_update_asset shadowsocks/shadowsocks-rust "$work/release.json" "$asset" "$work/archive.tar.xz" || return 1
+  mkdir -p "$work/staged" || return 1
+  tar -xJf "$work/archive.tar.xz" -C "$work/staged" || return 1
+  for binary in ssserver sslocal; do
+    chmod +x "$work/staged/$binary" || return 1
+    [ "$("$work/staged/$binary" --version | awk 'NR==1 {print $NF}')" = "${UPDATE_VERSION#v}" ] || return 1
+  done
+  backup_program_config shadowsocks /etc/shadowsocks || return 1
+  apply_core_update shadowsocks "$work/staged" ssserver sslocal || return 1
+  green "✅ shadowsocks-rust 已更新为 $UPDATE_VERSION"
+)
+
+update_snell_core() (
+  local work current version arch expected actual
+  if [ ! -x /usr/local/bin/snell-server ]; then
+    yellow "跳过 Snell：尚未安装"
+    return 2
+  fi
+  work=$(mktemp -d) || return 1
+  trap 'rm -rf "$work"' EXIT
+  current=$(/usr/local/bin/snell-server -v 2>&1 | sed -nE 's/.*snell-server (v[0-9]+\.[0-9]+\.[0-9]+).*/\1/p' | head -n 1) || return 1
+  if [[ "$current" != v5.* ]]; then
+    red "❌ Snell 当前为 $current；本脚本仅维护 v5 系列"
+    return 1
+  fi
+  curl -fsSL --retry 2 --connect-timeout 10 --max-time 30 \
+    https://kb.nssurge.com/surge-knowledge-base/release-notes/snell.md -o "$work/releases.md" || return 1
+  version=$(sed -nE 's/^### (v5\.[0-9]+\.[0-9]+)[[:space:]]*$/\1/p' "$work/releases.md" | sort -V | tail -n 1)
+  [[ "$version" =~ ^v5\.[0-9]+\.[0-9]+$ ]] || return 1
+  if ! update_version_needed "$current" "$version"; then
+    green "Snell $current 无需更新（v5 稳定版 $version）"
+    return 0
+  fi
+  arch=$(get_snell_arch) || return 1
+  green "正在更新 Snell: $current → $version"
+  curl -fL --retry 2 --connect-timeout 10 --max-time 180 \
+    "$SNELL_DOWNLOAD_BASE/snell-server-$version-linux-$arch.zip" -o "$work/archive.zip" || return 1
+  if [ "$version" = "$SNELL_VERSION" ]; then
+    expected=$(get_snell_sha256 "$arch") || return 1
+    actual=$(sha256sum "$work/archive.zip" | awk '{print $1}') || return 1
+    [ "$expected" = "$actual" ] || return 1
+  fi
+  unzip -q "$work/archive.zip" -d "$work/staged" || return 1
+  if [ "$OS" = alpine ]; then
+    apk add --no-cache gcompat libstdc++ libgcc libcap-utils || return 1
+    apk add --no-cache --virtual .snell-update-deps upx || return 1
+    if ! upx -d "$work/staged/snell-server"; then
+      apk del .snell-update-deps >/dev/null 2>&1 || true
+      return 1
+    fi
+    apk del .snell-update-deps >/dev/null 2>&1 || return 1
+  fi
+  chmod +x "$work/staged/snell-server" || return 1
+  [ "$("$work/staged/snell-server" -v 2>&1 | sed -nE 's/.*snell-server (v[0-9]+\.[0-9]+\.[0-9]+).*/\1/p' | head -n 1)" = "$version" ] || return 1
+  backup_program_config snell /etc/snell || return 1
+  apply_core_update snell "$work/staged" snell-server || return 1
+  green "✅ Snell 已更新为 $version"
+)
+
+update_chrony_package() {
+  local service=chronyd active=0 status=0 manager
+  if ! command -v chronyc >/dev/null 2>&1; then
+    yellow "跳过 Chrony：尚未安装"
+    return 2
+  fi
+  if [ "$OS" = debian ] || [ "$OS" = ubuntu ]; then
+    service=chrony
+  fi
+  update_service_active "$service" && active=1
+  backup_program_config chrony /etc/chrony /etc/chrony.conf /etc/chrony.d || return 1
+  green "正在通过系统软件源更新 Chrony..."
+  case "$OS" in
+    debian|ubuntu)
+      if ! apt-get update || ! DEBIAN_FRONTEND=noninteractive apt-get \
+        -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold \
+        install --only-upgrade -y chrony; then
+        status=1
+      fi
+      ;;
+    centos|rhel|rocky|almalinux|ol)
+      if command -v dnf >/dev/null 2>&1; then manager=dnf; else manager=yum; fi
+      "$manager" upgrade -y chrony || status=1
+      ;;
+    alpine)
+      if ! apk update || ! apk upgrade chrony; then status=1; fi
+      if apk info -e chrony-openrc >/dev/null 2>&1; then
+        apk upgrade chrony-openrc || status=1
+      fi
+      ;;
+    *) return 1 ;;
+  esac
+  if [ "$active" -eq 1 ]; then
+    update_service_action "$service" restart || return 1
+    sleep 2
+    update_service_active "$service" || return 1
+  elif update_service_active "$service"; then
+    update_service_action "$service" stop || return 1
+  fi
+  [ "$status" -eq 0 ] || return 1
+  chronyc --version || return 1
+  green "✅ Chrony 软件包更新完成（版本由系统软件源决定）"
+}
+
+update_all_programs() {
+  local updater result success=0 skipped=0 failed=0
+  mkdir -p /root/fast-vless-backups || return 1
+  UPDATE_BACKUP_DIR=$(mktemp -d /root/fast-vless-backups/update.XXXXXX) || return 1
+  chmod 0700 "$UPDATE_BACKUP_DIR" || return 1
+  for updater in update_xray_core update_shadowsocks_rust update_snell_core update_chrony_package; do
+    if "$updater"; then
+      success=$((success + 1))
+    else
+      result=$?
+      if [ "$result" -eq 2 ]; then
+        skipped=$((skipped + 1))
+      else
+        failed=$((failed + 1))
+        red "❌ 本项更新失败，继续检查其他程序"
+      fi
+    fi
+  done
+  echo "更新结果：成功/无需更新 $success，未安装跳过 $skipped，失败 $failed"
+  echo "本次更新前的配置备份: $UPDATE_BACKUP_DIR"
+  [ "$failed" -eq 0 ]
+}
+
 #====== 主菜单 ======
 while true; do
   clear
-  green "======= VLESS Reality 一键脚本V6.3正式版 by L.H.X ======="
+  green "======= VLESS Reality 一键脚本V6.4正式版 by L.H.X ======="
   echo "1) 安装并配置 VLESS Reality Vision节点"  
   echo "2）生成Trojan Reality节点"
   echo "3) 生成 VLESS 中转链接"
@@ -1421,6 +1764,7 @@ while true; do
   echo "12) 安装 Chrony 并同步系统时间"
   echo "13) 安装并配置 Snell v5 节点"
   echo "14) 卸载 Snell v5"
+  echo "15) 一键更新 Xray / SS-rust / Snell / Chrony"
   echo "0) 退出"
   echo
   read -rp "请选择操作: " choice
@@ -1590,6 +1934,11 @@ EOF
 
     14)
       uninstall_snell_v5
+      ;;
+
+    15)
+      update_all_programs || true
+      read -rp "按任意键返回菜单..."
       ;;
 
     0)

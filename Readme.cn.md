@@ -2,7 +2,7 @@
 
 VLESS / Trojan Reality / SS2022 / Snell 一键安装脚本，适合在 VPS 或 LXC 环境中快速部署代理节点。
 
-当前脚本版本：`V6.3 正式版 by L.H.X`
+当前脚本版本：`V6.4 正式版 by L.H.X`
 
 ## 功能
 
@@ -28,6 +28,7 @@ VLESS / Trojan Reality / SS2022 / Snell 一键安装脚本，适合在 VPS 或 L
 - 卸载 SS2022
 - 卸载 Snell v5
 - 从主菜单手动执行 Chrony 时间同步
+- 一键更新已安装的 Xray、shadowsocks-rust、Snell v5 和 Chrony
 
 ## 支持系统
 
@@ -81,8 +82,24 @@ bash <(curl -L https://raw.githubusercontent.com/Gavin-LHX/fast-vless/main/xrayv
 12) 安装 Chrony 并同步系统时间
 13) 安装并配置 Snell v5 节点
 14) 卸载 Snell v5
+15) 一键更新 Xray / SS-rust / Snell / Chrony
 0) 退出
 ```
+
+## 一键更新程序
+
+在主菜单选择 `15) 一键更新 Xray / SS-rust / Snell / Chrony`，按顺序检查并更新本脚本安装的程序。未安装的程序自动跳过，某一项失败后仍继续检查其他程序，最后显示成功、跳过和失败数量。
+
+- Xray、shadowsocks-rust：从官方 GitHub 获取最新稳定版，按 CPU 架构下载；SS-rust 在 Alpine 使用 musl，其他系统使用 gnu。当前版本相同或更新时跳过，避免降级。
+- GitHub API 不可用或触发限流时，改用官方 latest 页面和发布附件中的校验文件，不回退安装旧版本。
+- Snell：从 [官方发行说明](https://kb.nssurge.com/surge-knowledge-base/release-notes/snell) 检查最新 v5 版本，保留 `version: 5`、`udp: true`、`reuse: false` 的兼容性，不自动跨到 v6 或测试版本。已知 v5.0.1 包使用脚本内固定 SHA-256，后续 v5 包通过官方 HTTPS 下载并核对可执行文件版本。
+- Chrony：Debian / Ubuntu 使用 apt，Oracle Linux / RHEL 系使用 dnf 或 yum，Alpine 使用 apk，仅更新 Chrony 及其必要依赖，版本由发行版软件源决定。
+
+更新保留节点配置、UUID、密码、密钥、监听端口、历史链接以及服务文件；配置备份保存在 `/root/fast-vless-backups/update.XXXXXX/`，目录权限为 `0700`。更新不会启动原本停止的服务，也不会改变其开机自启设置。
+
+Xray 和 SS-rust 下载后校验官方 SHA-256，三个代理核心均先执行版本检查，Xray 还会使用新核心验证当前配置。仅在需要替换核心时短暂停止运行中的服务，启动失败会恢复旧核心；SS-rust 的 ssserver 和 sslocal 一起替换或回滚，Alpine 的 Snell 同时保留低端口 capability。
+
+Chrony 由系统包管理器升级并保留已有配置；升级或服务检查失败会报告失败，不承诺自动回滚系统软件包。更新前应确保系统软件源可用，RHEL 需要可用的订阅源或镜像源。
 
 ## Chrony 时间同步
 
