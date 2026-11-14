@@ -27,11 +27,19 @@ rc-service() { printf '%s\n' "$*" >> "$scratch/services"; }
 sleep() { :; }
 pidof() { return 0; }
 curl() {
+  local output="" previous="" arg
+  for arg in "$@"; do
+    if [ "$previous" = -o ]; then output="$arg"; fi
+    previous="$arg"
+  done
   if [[ "${*: -1}" == */releases/latest ]]; then
     printf '{"tag_name":"v26.10.21"}\n'
+  elif [[ "${*: -1}" == *.dgst ]]; then
+    printf 'SHA2-256= %s\n' "$(sha256sum "${output%.dgst}" | awk '{print $1}')" > "$output"
   else
     printf '%s\n' "${*: -1}" > "$scratch/url"
-    test "$mode" != download-fail
+    test "$mode" != download-fail || return 1
+    printf 'archive\n' > "$output"
   fi
 }
 unzip() {
@@ -39,7 +47,9 @@ unzip() {
   if [ "$mode" = invalid-binary ]; then
     printf '#!/bin/sh\nexit 126\n' > "$4/xray"
   else
-    printf '#!/bin/sh\necho Xray-test\n' > "$4/xray"
+    local version
+    version=$(sed -E 's|.*/download/v([^/]+)/.*|\1|' "$scratch/url")
+    printf '#!/bin/sh\necho "Xray %s"\n' "$version" > "$4/xray"
   fi
 }
 
@@ -61,8 +71,11 @@ done
 export mode=success
 bash "$scratch/installer.sh"
 grep -q '/Xray-linux-arm64-v8a.zip$' "$scratch/url"
-test "$("$scratch/local/bin/xray" version)" = Xray-test
+test "$("$scratch/local/bin/xray" version)" = 'Xray 26.10.21'
 test ! -e "$scratch/services" # No config yet: no false service success.
+bash "$scratch/installer.sh" --version v26.6.27
+grep -q '/v26.6.27/Xray-linux-arm64-v8a.zip$' "$scratch/url"
+test "$("$scratch/local/bin/xray" version)" = 'Xray 26.6.27'
 mkdir -p "$scratch/local/etc/xray"
 echo '{}' > "$scratch/local/etc/xray/config.json"
 bash "$scratch/installer.sh"

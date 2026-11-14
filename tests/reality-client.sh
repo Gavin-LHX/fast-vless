@@ -29,6 +29,8 @@ jq -e --arg name "$REMARK" --arg sid "$SHORT_ID" '
     .["reality-opts"]["support-x25519mlkem768"] == true)
 ' "$scratch/client.yaml" >/dev/null
 test "$(stat -c %a "$scratch/client.yaml")" = 600
+save_vless_reality_client_config "$scratch/compat.yaml" false
+jq -e '.proxies[0]["reality-opts"] | has("support-x25519mlkem768") | not' "$scratch/compat.yaml" >/dev/null
 
 # Export failures must not destroy a previously usable client configuration.
 cp "$scratch/client.yaml" "$scratch/original.yaml"

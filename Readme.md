@@ -83,8 +83,15 @@ bash <(curl -L https://raw.githubusercontent.com/Gavin-LHX/fast-vless/main/xrayv
 13) 安装并配置 Snell v5 节点
 14) 卸载 Snell v5
 15) 一键更新 Xray / SS-rust / Snell / Chrony
+16) 回退 Xray 到 v26.6.27（保留现有节点）
 0) 退出
 ```
+
+## Xray 版本选择与回退
+
+主菜单 `1` 安装 VLESS Reality Vision 时，可以选择 `1) 最新版本（官方稳定版）` 或 `2) v26.6.27（兼容版）`。兼容版不强制 REALITY 客户端发送 X25519MLKEM768，适用于不发送该密钥份额的 sing-box 客户端。参考 [v26.6.27 官方发布](https://github.com/XTLS/Xray-core/releases/tag/v26.6.27)和 [REALITY 上游变更](https://github.com/XTLS/REALITY/commit/8cdf7bf9c7f0)。
+
+已有节点请选择主菜单 `16`：只切换 Xray 内核，保留 UUID、密钥、端口和节点链接。切换前校验下载包与现有配置；若新内核无法启动，恢复原内核。原本停止的服务不会被自动启动。菜单 `15` 跳过已安装的兼容版；需要切回最新版并保留现有节点时，运行 `bash xrayvless.sh --xray-latest`，也可在菜单 `1` 安装新节点时选择最新版。
 
 ## 一键更新程序
 
@@ -129,7 +136,7 @@ VLESS Reality、Trojan Reality 和 VLESS + enc 的监听端口回车默认为 44
 
 较新的 Xray REALITY 服务端要求客户端握手携带 X25519MLKEM768。部分 Mihomo 版本默认关闭此能力，会出现 `REALITY authentication failed`，表现为 Koipy 延迟和速度均为 0，而使用 Xray 内核的客户端正常。
 
-创建 VLESS Reality Vision 节点时，脚本会同时导出 `/root/xray_reality_client.yaml`（权限 `0600`）。Mihomo / Koipy 请导入此 YAML，其中已设置：
+创建 VLESS Reality Vision 节点时，脚本会同时导出 `/root/xray_reality_client.yaml`（权限 `0600`）。最新版生成的 YAML 包含以下设置；兼容版生成的 YAML 不包含 ML-KEM 开关：
 
 ```yaml
 client-fingerprint: chrome

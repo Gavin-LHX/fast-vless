@@ -21,6 +21,7 @@ red() { echo "$1" >&2; }
 update_service_active() { return 1; }
 export OS=debian
 export UPDATE_BACKUP_DIR="$scratch/backups"
+export XRAY_COMPAT_VERSION=v26.6.27
 export SNELL_VERSION=v5.0.1
 export SNELL_DOWNLOAD_BASE=https://dl.nssurge.com/snell
 printf '#!/bin/sh\necho "Xray 0.0.0"\n' > "$scratch/bin/xray"
@@ -31,6 +32,11 @@ printf '#!/bin/sh\necho "snell-server v5.0.0"\n' > "$scratch/bin/snell-server"
 chmod +x "$scratch/bin/"*
 echo '{"inbounds":[],"outbounds":[{"protocol":"freedom"}]}' > "$scratch/etc/xray/config.json"
 update_xray_core
+update_xray_core "$XRAY_COMPAT_VERSION"
+test "$("$scratch/bin/xray" version | awk 'NR==1 {print $2}')" = "${XRAY_COMPAT_VERSION#v}"
+cmp "$scratch/etc/xray/config.json" "$UPDATE_BACKUP_DIR/xray/xray/config.json"
+update_xray_core # The compatibility release stays in place during a batch update.
+test "$("$scratch/bin/xray" version | awk 'NR==1 {print $2}')" = "${XRAY_COMPAT_VERSION#v}"
 update_shadowsocks_rust
 update_snell_core
 "$scratch/bin/xray" version

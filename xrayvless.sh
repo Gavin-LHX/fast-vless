@@ -14,6 +14,7 @@ LINK_HISTORY_FILE="/root/xray_link_history.txt"
 REALITY_CLIENT_CONFIG_FILE="/root/xray_reality_client.yaml"
 REALITY_CERT_MAX=8192
 REALITY_LAST_RESORT_DOMAIN="www.microsoft.com"
+XRAY_COMPAT_VERSION="v26.6.27"
 SS_RUST_FALLBACK_VERSION="v1.24.0"
 SS2022_METHOD="2022-blake3-aes-128-gcm"
 SNELL_VERSION="v5.0.1"
@@ -292,7 +293,18 @@ sync_time_before_node_creation() {
 
 #====== 检测xray是否安装 =====
 check_and_install_xray() {
+  local -a install_args=()
+  local installer=xrayinstall.sh requested="${1:-}" installed release_file
+
   if command -v xray >/dev/null 2>&1; then
+    if [ -n "$requested" ]; then
+      if [ "$(command -v xray)" != /usr/local/bin/xray ]; then
+        red "❌ 版本切换仅支持本脚本安装的 /usr/local/bin/xray"
+        return 1
+      fi
+      update_xray_core "$requested"
+      return
+    fi
     if ! xray version >/dev/null 2>&1; then
       red "❌ 已安装的 Xray 无法运行（可能是架构不匹配），请重新安装匹配 $(uname -m) 的内核"
       return 1
@@ -300,19 +312,47 @@ check_and_install_xray() {
     green "✅ Xray 已安装，跳过安装"
   else
     green "❗检测到 Xray 未安装，正在安装..."
-	if [ "$OS" = "alpine" ]; then
-		bash <(curl -L https://raw.githubusercontent.com/Gavin-LHX/fast-vless/main/xrayinstall-alpine.sh)
-	else
-		bash <(curl -L https://raw.githubusercontent.com/Gavin-LHX/fast-vless/main/xrayinstall.sh)
-	fi
-    
+    [ "$OS" != alpine ] || installer=xrayinstall-alpine.sh
+    if [ "$requested" = latest ]; then
+      release_file=$(mktemp) || return 1
+      if ! requested=$(get_update_release XTLS/Xray-core "$release_file"); then
+        rm -f "$release_file"
+        return 1
+      fi
+      rm -f "$release_file"
+    fi
+    if [ -n "$requested" ]; then
+      install_args=(--version "$requested")
+    fi
+    bash <(curl -fsSL "https://raw.githubusercontent.com/Gavin-LHX/fast-vless/main/$installer") "${install_args[@]}" || return 1
     XRAY_BIN=$(command -v xray || echo "/usr/local/bin/xray")
     if [ ! -x "$XRAY_BIN" ] || ! "$XRAY_BIN" version >/dev/null 2>&1; then
       red "❌ Xray 安装失败，请检查"
-      exit 1
+      return 1
+    fi
+    if [ "${#install_args[@]}" -gt 0 ]; then
+      installed=$("$XRAY_BIN" version | awk 'NR==1 {print $2}')
+      if [ "$installed" != "${requested#v}" ]; then
+        red "❌ Xray 安装版本与选择不符"
+        return 1
+      fi
     fi
     green "✅ Xray 安装完成"
   fi
+}
+
+select_reality_xray() {
+  local selection
+  echo "1) 最新版本（官方稳定版）"
+  echo "2) $XRAY_COMPAT_VERSION（兼容版，无 X25519MLKEM768 限制）"
+  while prompt_read "请选择 Xray 版本（默认 1）: " selection; do
+    case "${selection:-1}" in
+      1) XRAY_REALITY_VERSION=latest; return 0 ;;
+      2) XRAY_REALITY_VERSION="$XRAY_COMPAT_VERSION"; return 0 ;;
+      *) red "❌ 请输入 1 或 2" ;;
+    esac
+  done
+  return 1
 }
 #====== 流媒体解锁检测 ======
 check_streaming_unlock() {
@@ -339,20 +379,20 @@ save_link_history() {
 }
 
 save_vless_reality_client_config() {
-  local output_file="$1" candidate
+  local output_file="$1" use_mlkem="${2:-true}" candidate
 
   candidate=$(mktemp "${output_file}.XXXXXX") || return 1
   # JSON is also valid YAML; jq preserves quoting and scalar types for importers.
   if ! jq -n --arg name "$REMARK" --arg server "$IP" --argjson port "$PORT" \
-    --arg uuid "$UUID" --arg sni "$SNI" --arg public_key "$PUB_KEY" --arg short_id "$SHORT_ID" '
+    --arg uuid "$UUID" --arg sni "$SNI" --arg public_key "$PUB_KEY" --arg short_id "$SHORT_ID" \
+    --argjson use_mlkem "$use_mlkem" '
     {proxies: [{
       name: $name, type: "vless", server: $server, port: $port, uuid: $uuid,
       network: "tcp", tls: true, flow: "xtls-rprx-vision", servername: $sni,
       "client-fingerprint": "chrome",
       "reality-opts": {
-        "public-key": $public_key, "short-id": $short_id,
-        "support-x25519mlkem768": true
-      }
+        "public-key": $public_key, "short-id": $short_id
+      } + (if $use_mlkem then {"support-x25519mlkem768": true} else {} end)
     }]}' > "$candidate"; then
     rm -f "$candidate"
     return 1
@@ -1435,20 +1475,21 @@ backup_program_config() {
 }
 
 get_update_release() {
-  local repository="$1" output="$2" release_url
+  local repository="$1" output="$2" release_url version
   if curl -fsSL --retry 2 --connect-timeout 10 --max-time 30 \
     "https://api.github.com/repos/$repository/releases/latest" -o "$output"; then
-    UPDATE_VERSION=$(jq -er 'select(.draft == false and .prerelease == false) |
+    version=$(jq -er 'select(.draft == false and .prerelease == false) |
       .tag_name | select(type == "string" and test("^v[0-9]+(\\.[0-9]+){1,3}$"))' "$output") || return 1
   else
-    yellow "GitHub API 暂不可用，改用官方 latest 页面获取稳定版本"
+    yellow "GitHub API 暂不可用，改用官方 latest 页面获取稳定版本" >&2
     release_url=$(curl -fsSL --retry 2 --connect-timeout 10 --max-time 30 \
       -o /dev/null -w '%{url_effective}' "https://github.com/$repository/releases/latest") || return 1
-    UPDATE_VERSION=${release_url##*/}
-    [[ "$UPDATE_VERSION" =~ ^v[0-9]+(\.[0-9]+){1,3}$ ]] || return 1
-    [ "$release_url" = "https://github.com/$repository/releases/tag/$UPDATE_VERSION" ] || return 1
-    jq -n --arg tag "$UPDATE_VERSION" '{tag_name:$tag,assets:[],fallback:true}' > "$output" || return 1
+    version=${release_url##*/}
+    [[ "$version" =~ ^v[0-9]+(\.[0-9]+){1,3}$ ]] || return 1
+    [ "$release_url" = "https://github.com/$repository/releases/tag/$version" ] || return 1
+    jq -n --arg tag "$version" '{tag_name:$tag,assets:[],fallback:true}' > "$output" || return 1
   fi
+  printf '%s\n' "$version"
 }
 
 update_version_needed() {
@@ -1460,13 +1501,13 @@ update_version_needed() {
 }
 
 download_update_asset() {
-  local repository="$1" release="$2" asset="$3" output="$4"
+  local repository="$1" release="$2" asset="$3" output="$4" version="$5"
   local url digest actual
   url=$(jq -r --arg name "$asset" '.assets[] | select(.name == $name) | .browser_download_url' "$release") || return 1
   if [ -z "$url" ] && [ "$(jq -r '.fallback // false' "$release")" = true ]; then
-    url="https://github.com/$repository/releases/download/$UPDATE_VERSION/$asset"
+    url="https://github.com/$repository/releases/download/$version/$asset"
   fi
-  if [ "$url" != "https://github.com/$repository/releases/download/$UPDATE_VERSION/$asset" ]; then
+  if [ "$url" != "https://github.com/$repository/releases/download/$version/$asset" ]; then
     red "❌ 更新文件下载地址不符合官方发布路径"
     return 1
   fi
@@ -1573,37 +1614,64 @@ apply_core_update() (
   fi
 )
 
+prepare_update_backup() {
+  local backup_dir
+  mkdir -p /root/fast-vless-backups || return 1
+  backup_dir=$(mktemp -d /root/fast-vless-backups/update.XXXXXX) || return 1
+  chmod 0700 "$backup_dir" || return 1
+  printf '%s\n' "$backup_dir"
+}
+
 update_xray_core() (
-  local work arch current asset
+  local requested="${1:-}" work arch current asset version
+  local backup_dir="${UPDATE_BACKUP_DIR:-}"
   if [ ! -x /usr/local/bin/xray ]; then
     yellow "跳过 Xray：尚未安装"
     return 2
   fi
+  current=$(/usr/local/bin/xray version | awk 'NR==1 {print $2}') || return 1
+  if [ -z "$requested" ] && [ "v$current" = "$XRAY_COMPAT_VERSION" ]; then
+    green "Xray $XRAY_COMPAT_VERSION 兼容版已保留，跳过批量升级"
+    return 0
+  fi
   work=$(mktemp -d) || return 1
   trap 'rm -rf "$work"' EXIT
   arch=$(get_xray_update_arch) || return 1
-  current=$(/usr/local/bin/xray version | awk 'NR==1 {print $2}') || return 1
-  get_update_release XTLS/Xray-core "$work/release.json" || return 1
-  if ! update_version_needed "$current" "$UPDATE_VERSION"; then
-    green "Xray $current 无需更新（官方稳定版 $UPDATE_VERSION）"
+  case "$requested" in
+    ''|latest) version=$(get_update_release XTLS/Xray-core "$work/release.json") || return 1 ;;
+    "$XRAY_COMPAT_VERSION")
+      version="$XRAY_COMPAT_VERSION"
+      jq -n '{assets:[],fallback:true}' > "$work/release.json" || return 1
+      ;;
+    *) return 1 ;;
+  esac
+  if [ "v$current" = "$version" ] || \
+    { [ -z "$requested" ] && ! update_version_needed "$current" "$version"; }; then
+    green "Xray $current 无需切换（目标版本 $version）"
     return 0
   fi
-  green "正在更新 Xray: $current → $UPDATE_VERSION"
+  green "正在切换 Xray: $current → $version"
   asset="Xray-linux-$arch.zip"
-  download_update_asset XTLS/Xray-core "$work/release.json" "$asset" "$work/archive.zip" || return 1
+  download_update_asset XTLS/Xray-core "$work/release.json" "$asset" "$work/archive.zip" "$version" || return 1
   unzip -q "$work/archive.zip" -d "$work/staged" || return 1
   chmod +x "$work/staged/xray" || return 1
-  [ "$("$work/staged/xray" version | awk 'NR==1 {print $2}')" = "${UPDATE_VERSION#v}" ] || return 1
+  [ "$("$work/staged/xray" version | awk 'NR==1 {print $2}')" = "${version#v}" ] || return 1
   if [ -f /usr/local/etc/xray/config.json ]; then
-    XRAY_LOCATION_ASSET=/usr/local/share/xray "$work/staged/xray" run -test -config /usr/local/etc/xray/config.json || return 1
+    if ! XRAY_LOCATION_ASSET=/usr/local/share/xray "$work/staged/xray" run -test -config /usr/local/etc/xray/config.json; then
+      red "❌ 目标版本未通过现有配置检查，原核心和配置保持不变"
+      return 1
+    fi
   fi
-  backup_program_config xray /usr/local/etc/xray || return 1
+  if [ -z "$backup_dir" ]; then
+    backup_dir=$(prepare_update_backup) || return 1
+  fi
+  UPDATE_BACKUP_DIR="$backup_dir" backup_program_config xray /usr/local/etc/xray || return 1
   apply_core_update xray "$work/staged" xray || return 1
-  green "✅ Xray 已更新为 $UPDATE_VERSION"
+  green "✅ Xray 已切换为 $version；配置备份: $backup_dir/xray"
 )
 
 update_shadowsocks_rust() (
-  local work flavor=gnu target current asset binary
+  local work flavor=gnu target current asset binary version
   if [ ! -x /usr/local/bin/ssserver ]; then
     yellow "跳过 shadowsocks-rust：尚未安装"
     return 2
@@ -1613,23 +1681,23 @@ update_shadowsocks_rust() (
   [ "$OS" != alpine ] || flavor=musl
   target=$(get_shadowsocks_rust_target "$flavor") || return 1
   current=$(/usr/local/bin/ssserver --version | awk 'NR==1 {print $NF}') || return 1
-  get_update_release shadowsocks/shadowsocks-rust "$work/release.json" || return 1
-  if ! update_version_needed "$current" "$UPDATE_VERSION"; then
-    green "shadowsocks-rust $current 无需更新（官方稳定版 $UPDATE_VERSION）"
+  version=$(get_update_release shadowsocks/shadowsocks-rust "$work/release.json") || return 1
+  if ! update_version_needed "$current" "$version"; then
+    green "shadowsocks-rust $current 无需更新（官方稳定版 $version）"
     return 0
   fi
-  green "正在更新 shadowsocks-rust: $current → $UPDATE_VERSION ($target)"
-  asset="shadowsocks-$UPDATE_VERSION.$target.tar.xz"
-  download_update_asset shadowsocks/shadowsocks-rust "$work/release.json" "$asset" "$work/archive.tar.xz" || return 1
+  green "正在更新 shadowsocks-rust: $current → $version ($target)"
+  asset="shadowsocks-$version.$target.tar.xz"
+  download_update_asset shadowsocks/shadowsocks-rust "$work/release.json" "$asset" "$work/archive.tar.xz" "$version" || return 1
   mkdir -p "$work/staged" || return 1
   tar -xJf "$work/archive.tar.xz" -C "$work/staged" || return 1
   for binary in ssserver sslocal; do
     chmod +x "$work/staged/$binary" || return 1
-    [ "$("$work/staged/$binary" --version | awk 'NR==1 {print $NF}')" = "${UPDATE_VERSION#v}" ] || return 1
+    [ "$("$work/staged/$binary" --version | awk 'NR==1 {print $NF}')" = "${version#v}" ] || return 1
   done
   backup_program_config shadowsocks /etc/shadowsocks || return 1
   apply_core_update shadowsocks "$work/staged" ssserver sslocal || return 1
-  green "✅ shadowsocks-rust 已更新为 $UPDATE_VERSION"
+  green "✅ shadowsocks-rust 已更新为 $version"
 )
 
 update_snell_core() (
@@ -1725,9 +1793,8 @@ update_chrony_package() {
 
 update_all_programs() {
   local updater result success=0 skipped=0 failed=0
-  mkdir -p /root/fast-vless-backups || return 1
-  UPDATE_BACKUP_DIR=$(mktemp -d /root/fast-vless-backups/update.XXXXXX) || return 1
-  chmod 0700 "$UPDATE_BACKUP_DIR" || return 1
+  local UPDATE_BACKUP_DIR
+  UPDATE_BACKUP_DIR=$(prepare_update_backup) || return 1
   for updater in update_xray_core update_shadowsocks_rust update_snell_core update_chrony_package; do
     if "$updater"; then
       success=$((success + 1))
@@ -1747,6 +1814,11 @@ update_all_programs() {
 }
 
 #====== 主菜单 ======
+if [ "${1:-}" = --xray-latest ]; then
+  update_xray_core latest
+  exit 0
+fi
+
 while true; do
   clear
   green "======= VLESS Reality 一键脚本V6.4正式版 by L.H.X ======="
@@ -1765,14 +1837,19 @@ while true; do
   echo "13) 安装并配置 Snell v5 节点"
   echo "14) 卸载 Snell v5"
   echo "15) 一键更新 Xray / SS-rust / Snell / Chrony"
+  echo "16) 回退 Xray 到 $XRAY_COMPAT_VERSION（保留现有节点）"
   echo "0) 退出"
   echo
   read -rp "请选择操作: " choice
 
   case "$choice" in
     1)
+      select_reality_xray || break
       sync_time_before_node_creation
-      check_and_install_xray
+      if ! check_and_install_xray "$XRAY_REALITY_VERSION"; then
+        read -rp "Xray 安装或切换失败，按回车返回菜单..."
+        continue
+      fi
       XRAY_BIN=$(command -v xray || echo "/usr/local/bin/xray")
       read_xray_port
       read -rp "节点备注: " REMARK
@@ -1823,12 +1900,16 @@ EOF
       save_link_history "VLESS Reality Vision" "$REMARK" "$LINK"
       green "✅ 节点链接如下："
       echo "$LINK"
-      if save_vless_reality_client_config "$REALITY_CLIENT_CONFIG_FILE"; then
+      reality_use_mlkem=true
+      [ "$XRAY_REALITY_VERSION" != "$XRAY_COMPAT_VERSION" ] || reality_use_mlkem=false
+      if save_vless_reality_client_config "$REALITY_CLIENT_CONFIG_FILE" "$reality_use_mlkem"; then
         green "✅ Mihomo / Koipy 客户端配置已保存: $REALITY_CLIENT_CONFIG_FILE"
-        yellow "Mihomo / Koipy 请导入此 YAML；普通 VLESS 链接无法携带 support-x25519mlkem768。"
+        if [ "$reality_use_mlkem" = true ]; then
+          yellow "Mihomo / Koipy 请导入此 YAML；普通 VLESS 链接无法携带 support-x25519mlkem768。"
+        fi
         yellow "NAT 服务器请将链接地址及 YAML 的 server 改为服务商分配的公网入口地址。"
       else
-        yellow "⚠️ 客户端 YAML 保存失败；Mihomo 需在 reality-opts 下设置 support-x25519mlkem768: true"
+        yellow "⚠️ 客户端 YAML 保存失败"
       fi
       read -rp "按任意键返回菜单..."
       ;;
@@ -1939,6 +2020,13 @@ EOF
     15)
       update_all_programs || true
       read -rp "按任意键返回菜单..."
+      ;;
+
+    16)
+      if ! update_xray_core "$XRAY_COMPAT_VERSION"; then
+        red "❌ Xray 未回退，请检查上方提示"
+      fi
+      read -rp "按回车返回菜单..."
       ;;
 
     0)

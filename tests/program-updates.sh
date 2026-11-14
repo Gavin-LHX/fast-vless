@@ -10,7 +10,7 @@ export UPDATE_TEST_ROOT="$scratch"
 mkdir -p "$scratch/bin" "$scratch/staged" "$scratch/etc/xray" "$scratch/etc/shadowsocks" "$scratch/etc/snell"
 
 {
-  for name in get_shadowsocks_rust_target get_snell_arch; do
+  for name in get_shadowsocks_rust_target get_snell_arch prompt_read select_reality_xray; do
     awk -v name="$name" '$0 == name "() {" {inside=1} inside {print} inside && /^}$/ {exit}' "$repo/xrayvless.sh"
   done
   sed -n '/^update_service_active() {/,/^#====== 主菜单 ======/p' "$repo/xrayvless.sh" | sed '$d'
@@ -24,8 +24,14 @@ sleep() { :; }
 uname() { echo x86_64; }
 export OS=debian
 export UPDATE_BACKUP_DIR="$scratch/backups/manual"
+export XRAY_COMPAT_VERSION=v26.6.27
 export SNELL_VERSION=v5.0.1
 export SNELL_DOWNLOAD_BASE=https://dl.nssurge.com/snell
+
+select_reality_xray <<< '' >/dev/null
+test "$XRAY_REALITY_VERSION" = latest
+select_reality_xray <<< $'invalid\n2' >/dev/null
+test "$XRAY_REALITY_VERSION" = "$XRAY_COMPAT_VERSION"
 
 update_version_needed 1.24.0 v1.25.0
 if update_version_needed v5.0.1 v5.0.1 || update_version_needed v5.0.2 v5.0.1; then
@@ -109,6 +115,8 @@ root = pathlib.Path(sys.argv[1])
 for binary in ('xray', 'snell-server'):
     with zipfile.ZipFile(root / (binary + '.zip'), 'w') as archive:
         archive.write(root / 'fixture' / binary, binary)
+with zipfile.ZipFile(root / 'xray-compat.zip', 'w') as archive:
+    archive.writestr('xray', (root / 'fixture' / 'xray').read_text().replace('26.10.21', '26.6.27'))
 PY
 get_snell_sha256() { sha256sum "$scratch/snell-server.zip" | awk '{print $1}'; }
 
@@ -128,6 +136,10 @@ curl() {
       asset=shadowsocks-v1.25.0.x86_64-unknown-linux-gnu.tar.xz; archive=ss.tar.xz ;;
     */snell.md)
       printf '### v6.0.0\n### v5.0.1\n### v5.0.0\n' > "$output"
+      return ;;
+    */v26.6.27/Xray-linux-64.zip) cp "$scratch/xray-compat.zip" "$output"; return ;;
+    */v26.6.27/Xray-linux-64.zip.dgst)
+      printf 'SHA2-256= %s\n' "$(sha256sum "$scratch/xray-compat.zip" | awk '{print $1}')" > "$output"
       return ;;
     */Xray-linux-64.zip) cp "$scratch/xray.zip" "$output"; return ;;
     */shadowsocks-v1.25.0.*) cp "$scratch/ss.tar.xz" "$output"; return ;;
@@ -169,6 +181,24 @@ test "$("$scratch/bin/sslocal" --version)" = 'shadowsocks 1.25.0'
 grep -qx 'same-password' "$scratch/etc/shadowsocks/config.json"
 grep -qx 'same-psk' "$scratch/etc/snell/snell-server.conf"
 cmp "$scratch/etc/xray/config.json" "$UPDATE_BACKUP_DIR/xray/xray/config.json"
+touch "$scratch/active-xray"
+for failure in bad-config fail-next-start; do
+  touch "$scratch/$failure"
+  if update_xray_core "$XRAY_COMPAT_VERSION"; then
+    echo "Compatibility switch should fail with $failure" >&2
+    exit 1
+  fi
+  rm -f "$scratch/$failure"
+  test "$("$scratch/bin/xray" version)" = 'Xray 26.10.21'
+  test -e "$scratch/active-xray"
+done
+update_xray_core "$XRAY_COMPAT_VERSION"
+update_xray_core
+test "$("$scratch/bin/xray" version)" = 'Xray 26.6.27'
+test -e "$scratch/active-xray"
+cmp "$scratch/etc/xray/config.json" "$UPDATE_BACKUP_DIR/xray/xray/config.json"
+update_xray_core latest
+test "$("$scratch/bin/xray" version)" = 'Xray 26.10.21'
 update_snell_core # The v6 release in the fixture must not trigger an upgrade.
 apk() { printf 'apk %s\n' "$*" >> "$scratch/packages"; }
 upx() { test "$1" = -d; }

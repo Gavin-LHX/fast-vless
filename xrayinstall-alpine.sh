@@ -14,19 +14,38 @@ get_xray_alpine_arch() {
 
 install_xray_alpine() (
   set -euo pipefail
-  local arch version work
+  local arch version work expected actual installed
   arch=$(get_xray_alpine_arch "$(uname -m)")
+  if [ "$#" -gt 0 ]; then
+    if [ "$#" -ne 2 ] || [ "$1" != --version ] || [[ ! "$2" =~ ^v[0-9]+(\.[0-9]+){1,3}$ ]]; then
+      echo '用法: xrayinstall-alpine.sh [--version vX.Y.Z]' >&2
+      return 1
+    fi
+    version="$2"
+  else
+    version=""
+  fi
   apk add --no-cache ca-certificates curl unzip jq openrc
-  version=$(curl -fsSL --retry 3 --connect-timeout 10 --max-time 30 \
-    https://api.github.com/repos/XTLS/Xray-core/releases/latest | jq -er '.tag_name | select(type == "string" and test("^v[0-9][0-9.]*$"))')
+  if [ -z "$version" ]; then
+    version=$(curl -fsSL --retry 3 --connect-timeout 10 --max-time 30 \
+      https://api.github.com/repos/XTLS/Xray-core/releases/latest | jq -er '.tag_name | select(type == "string" and test("^v[0-9][0-9.]*$"))')
+  fi
   work=$(mktemp -d)
   trap 'rm -rf "$work"' EXIT
   curl -fL --retry 3 --connect-timeout 10 --max-time 180 -o "$work/xray.zip" \
     "https://github.com/XTLS/Xray-core/releases/download/$version/Xray-linux-$arch.zip"
+  curl -fsSL --retry 3 --connect-timeout 10 --max-time 30 -o "$work/xray.zip.dgst" \
+    "https://github.com/XTLS/Xray-core/releases/download/$version/Xray-linux-$arch.zip.dgst"
+  expected=$(awk -F '= ' '/256=/ {gsub(/\r/, "", $2); print $2; exit}' "$work/xray.zip.dgst")
+  actual=$(sha256sum "$work/xray.zip" | awk '{print $1}')
+  if [[ ! "$expected" =~ ^[a-fA-F0-9]{64}$ ]] || [ "${expected,,}" != "$actual" ]; then
+    echo '❌ Xray 下载包 SHA-256 校验失败，保留原有安装' >&2
+    return 1
+  fi
   unzip -q "$work/xray.zip" -d "$work/unpacked"
   chmod +x "$work/unpacked/xray"
   # Execute before replacing the installed core: +x alone does not prove it runs.
-  if ! "$work/unpacked/xray" version; then
+  if ! installed=$("$work/unpacked/xray" version) || [ "$(printf '%s\n' "$installed" | awk 'NR==1 {print $2}')" != "${version#v}" ]; then
     echo '❌ 下载的 Xray 内核无法运行，保留原有安装' >&2
     return 1
   fi
@@ -63,5 +82,5 @@ EOF
 )
 
 if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
-  install_xray_alpine
+  install_xray_alpine "$@"
 fi
