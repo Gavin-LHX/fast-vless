@@ -30,7 +30,10 @@ jq -e --arg name "$REMARK" --arg sid "$SHORT_ID" '
 ' "$scratch/client.yaml" >/dev/null
 test "$(stat -c %a "$scratch/client.yaml")" = 600
 save_vless_reality_client_config "$scratch/compat.yaml" false
-jq -e '.proxies[0]["reality-opts"] | has("support-x25519mlkem768") | not' "$scratch/compat.yaml" >/dev/null
+jq -e --arg sid "$SHORT_ID" '.proxies[0]["reality-opts"] |
+  .["public-key"] == "fixture-public-key" and .["short-id"] == $sid and
+  (has("support-x25519mlkem768") | not)' "$scratch/compat.yaml" >/dev/null
+test "$(stat -c %a "$scratch/compat.yaml")" = 600
 
 # Export failures must not destroy a previously usable client configuration.
 cp "$scratch/client.yaml" "$scratch/original.yaml"

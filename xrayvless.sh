@@ -390,9 +390,9 @@ save_vless_reality_client_config() {
       name: $name, type: "vless", server: $server, port: $port, uuid: $uuid,
       network: "tcp", tls: true, flow: "xtls-rprx-vision", servername: $sni,
       "client-fingerprint": "chrome",
-      "reality-opts": {
+      "reality-opts": ({
         "public-key": $public_key, "short-id": $short_id
-      } + (if $use_mlkem then {"support-x25519mlkem768": true} else {} end)
+      } + (if $use_mlkem then {"support-x25519mlkem768": true} else {} end))
     }]}' > "$candidate"; then
     rm -f "$candidate"
     return 1
