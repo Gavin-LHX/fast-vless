@@ -443,7 +443,6 @@ get_reality_candidates() {
   case "$country" in
     CN|HK|MO|TW)
       cat <<EOF
-autopatchcn.yuanshen.com
 autopatchhk.yuanshen.com
 autopatchcn.bhsr.com
 bundle.bh3.com
@@ -493,7 +492,6 @@ get_global_reality_candidates() {
   cat <<EOF
 launcher-webstatic.hoyoverse.com
 download-porter.hoyoverse.com
-autopatchcn.yuanshen.com
 game.gtimg.cn
 nie.res.netease.com
 EOF
