@@ -444,25 +444,34 @@ get_reality_candidates() {
     CN|HK|MO|TW)
       cat <<EOF
 autopatchhk.yuanshen.com
-autopatchcn.bhsr.com
-bundle.bh3.com
-game.gtimg.cn
-ossweb-img.qq.com
-nie.res.netease.com
-adl.netease.com
+autopatchasia.honkaiimpact3.com
+autopatchos.zenlesszonezero.com
 EOF
       ;;
-    JP|KR)
+    JP)
       cat <<EOF
 autopatchos.starrails.com
+autopatchjp.honkaiimpact3.com
+autopatchos.zenlesszonezero.com
 launcher-webstatic.hoyoverse.com
 download-porter.hoyoverse.com
 autopatchhk.yuanshen.com
-game.gtimg.cn
+EOF
+      ;;
+    KR)
+      cat <<EOF
+autopatchos.starrails.com
+autopatchkr.honkaiimpact3.com
+autopatchos.zenlesszonezero.com
+launcher-webstatic.hoyoverse.com
+download-porter.hoyoverse.com
+autopatchhk.yuanshen.com
 EOF
       ;;
     SG|MY|TH|VN|PH|ID)
       cat <<EOF
+autopatchasia.honkaiimpact3.com
+autopatchos.zenlesszonezero.com
 sg-public-api.hoyoverse.com
 sg-public-data-api.hoyoverse.com
 sg-hk4e-api.hoyoverse.com
@@ -470,10 +479,6 @@ sg-public-api.hoyolab.com
 launcher-webstatic.hoyoverse.com
 download-porter.hoyoverse.com
 sdk-os-static.hoyoverse.com
-g.alicdn.com
-img.alicdn.com
-gw.alipayobjects.com
-www.alibabagroup.com
 EOF
       ;;
     US|CA|GB|IE|FR|DE|NL|BE|LU|CH|AT|ES|PT|IT|SE|NO|DK|FI|PL|CZ|HU|RO|BG|GR|AU|NZ)
@@ -481,8 +486,8 @@ EOF
 launcher-webstatic.hoyoverse.com
 download-porter.hoyoverse.com
 autopatchos.starrails.com
-game.gtimg.cn
-nie.res.netease.com
+autopatchos.zenlesszonezero.com
+autopatchglb.honkaiimpact3.com
 EOF
       ;;
   esac
@@ -492,8 +497,8 @@ get_global_reality_candidates() {
   cat <<EOF
 launcher-webstatic.hoyoverse.com
 download-porter.hoyoverse.com
-game.gtimg.cn
-nie.res.netease.com
+autopatchos.zenlesszonezero.com
+autopatchglb.honkaiimpact3.com
 EOF
 }
 
